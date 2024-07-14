@@ -56,6 +56,10 @@ please change the definition of the RTE_TARGET environment variable)
 endif
 
 CFLAGS += -O3
+# -D: 这个选项用于定义一个预处理器宏。在这种情况下，定义了宏 ALLOW_EXPERIMENTAL_API。
+# ALLOW_EXPERIMENTAL_API: 定义这个宏允许在代码中使用 DPDK 提供的实验性 API。DPDK 的某些 API 被标记为实验性的，
+# 意味着这些 API 可能在将来的版本中发生变化或被删除。为了确保开发者明确意识到这些 API 的不稳定性，
+# DPDK 要求通过定义这个宏来显式允许使用这些 API。
 CFLAGS += -DALLOW_EXPERIMENTAL_API
 CFLAGS += $(WERROR_FLAGS)
 #调试信息，这样在调试时可以使用调试器对程序进行调试
