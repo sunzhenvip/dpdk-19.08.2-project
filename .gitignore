@@ -1,5 +1,5 @@
 # ignore hidden files
-#.*
+.*
 # ignore generated ctags/cscope files
 cscope.out.po
 cscope.out.in
