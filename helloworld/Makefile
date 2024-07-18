@@ -9,9 +9,12 @@ APP = helloworld
 SRCS-y := main.c
 
 # Build using pkg-config variables if possible
+# 判断 "pkg-config --exists libdpdk && echo 0" 执行结果 是否等于0 ，如果等于0表示安装了 pkg-config 设置了 dpdk
 ifeq ($(shell pkg-config --exists libdpdk && echo 0),0)
 
-all: shared
+
+# 如果终端执行的命令是 make 实际默认执行的 make all
+all: shared # shared 链接执行的是 build/$(APP)-shared
 .PHONY: shared static
 shared: build/$(APP)-shared
 	ln -sf $(APP)-shared build/$(APP)
