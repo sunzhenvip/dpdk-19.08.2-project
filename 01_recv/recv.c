@@ -169,7 +169,7 @@ int test_main(int argc, char *argv[]) {
     while (1) {
         // 接受数据的时候 包的数据量最大可以写入128个
         // 如果超过128 可能会出错 机器网卡可能会重启 、丢弃还是重启 还不太确定 ，超出了机器可能会重启 或者宕机 具体要看什么情况
-        rte_eth_rx_burst();
+        // rte_eth_rx_burst();
     }
 }
 
