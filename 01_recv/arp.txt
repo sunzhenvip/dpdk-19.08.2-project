@@ -1,13 +1,19 @@
 
-
+Windows下查看arp缓存
+arp -a
+添加arp 会添加的默认网络接口上 不会添加到指定的网络接口上
 arp -s 192.168.0.120 00-0c-29-85-2e-88
+arp -s 192.168.79.201 00-0c-29-1a-f3-9e
 
-arp -d 192.168.0.120 
+删除arp某个地址
+arp -d 192.168.0.120
 
 
-查看网口idx
+查看网口idx(网路接口)
+执行命令通过知道Idx在那个网络上 选择对应的网络添加对应的网络接口的arp地址
 netsh i i show in
-
+执行的添加命令(23表示的idx表示的是那个网络接口上增加arp)
 netsh -c i i add neighbors 23 192.168.0.120 00-0c-29-85-2e-88
+增加完之后可以使用NetAssist.exe软件进行对该ip地址发送udp或者tcp数据,测试dpdk能否进行收发数据
 
 netsh  i i delete neighbors 22
