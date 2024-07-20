@@ -72,7 +72,7 @@ int main(int argc, char *argv[]) {
     while (1) {
 
         struct rte_mbuf *mbufs[BURST_SIZE]; // 也可以设置大一点128个
-        // 取出数据
+        // 通过该方法接受网卡数据
         unsigned num_recvd = rte_eth_rx_burst(gDpdkPortId, 0, mbufs, BURST_SIZE);
         if (num_recvd > BURST_SIZE) {
             rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
