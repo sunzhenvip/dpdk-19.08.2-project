@@ -71,7 +71,8 @@ int main(int argc, char *argv[]) {
 
     while (1) {
 
-        struct rte_mbuf *mbufs[BURST_SIZE];
+        struct rte_mbuf *mbufs[BURST_SIZE]; // 也可以设置大一点128个
+        // 取出数据
         unsigned num_recvd = rte_eth_rx_burst(gDpdkPortId, 0, mbufs, BURST_SIZE);
         if (num_recvd > BURST_SIZE) {
             rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
@@ -90,18 +91,24 @@ int main(int argc, char *argv[]) {
 
             if (iphdr->next_proto_id == IPPROTO_UDP) {
 
-                struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) (iphdr + 1);
-
+                // struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) (iphdr + 1);
+                // 上一行代码修正版
+                struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) ((char *) iphdr + sizeof(struct rte_ipv4_hdr));
+                // 网络字节顺什么时候转换 两个字节以上包含两个字节
                 uint16_t length = ntohs(udphdr->dgram_len);
+                // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
                 *((char *) udphdr + length) = '\0';
+
+                uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
+
 
                 struct in_addr addr;
                 addr.s_addr = iphdr->src_addr;
-                printf("src: %s:%d, ", inet_ntoa(addr), udphdr->src_port);
+                printf("src: %s:%d \n", inet_ntoa(addr), ntohs(udphdr->src_port));
 
                 addr.s_addr = iphdr->dst_addr;
-                printf("dst: %s:%d, %s\n", inet_ntoa(addr), udphdr->src_port,
-                       (char *) (udphdr + 1));
+                printf("dst: %s:%d, upd_payload_len=%d,%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port),
+                       upd_payload_len, (char *) (udphdr + 1));
 
                 rte_pktmbuf_free(mbufs[i]);
             }
@@ -112,7 +119,7 @@ int main(int argc, char *argv[]) {
 
 }
 
-
+// 下面是测试的代码
 // 定义一个端口的id表示的是 绑定的网卡id
 int gDpdkPortIdT = 0;
 // 设置端口配置信息
@@ -148,6 +155,12 @@ static void ng_init_portT(struct rte_mempool *mbuf_pool) {
         rte_exit(EXIT_FAILURE, "启动失败\n");
     }
 }
+
+// 增加原型不会有警告：‘test_main’先前没有原型 [-Wmissing-prototypes]
+//  int test_main(int argc, char *argv[]) {
+//      ^
+// cc1: 警告：无法识别的命令行选项“-Wno-address-of-packed-member” [默认启用]
+int test_main(int argc, char *argv[]);
 
 int test_main(int argc, char *argv[]) {
 
