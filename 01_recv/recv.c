@@ -39,6 +39,11 @@ static void ng_init_port(struct rte_mempool *mbuf_pool) {
         rte_exit(EXIT_FAILURE, "Could not setup RX queue\n");
 
     }
+    // 还没确定怎么写
+    // if (rte_eth_tx_queue_setup(
+    //         gDpdkPortId, 0, 128, rte_eth_dev_socket_id(gDpdkPortId), &dev_info) < 0) {
+    //     rte_exit(EXIT_FAILURE, "发送队列设置失败\n");
+    // }
 
     if (rte_eth_dev_start(gDpdkPortId) < 0) {
         rte_exit(EXIT_FAILURE, "Could not start\n");
@@ -46,6 +51,34 @@ static void ng_init_port(struct rte_mempool *mbuf_pool) {
 
 
 }
+
+
+
+/**
+ * 创建一个UDP的数据报文
+ * 没有写完
+ */
+static void create_eth_ip_udp(uint8_t *msg, uint8_t *dst_mac, size_t total_len,
+                              uint32_t src_ip, uint32_t dst_ip, uint16_t src_port, uint16_t dst_port) {
+    // eth ip udp
+    // 创建以太网头部
+    struct rte_ether_addr src_mac;
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
+    rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+
+    // 获取绑定端口的mac地址
+    rte_eth_macaddr_get(gDpdkPortId, &src_mac);
+    rte_memcpy(eth->s_addr.addr_bytes, &src_mac, RTE_ETHER_ADDR_LEN);
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+    // ipv4-包头设置
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *) (eth + 1);
+    ip->version_ihl = 0x45;
+    ip->type_of_service = 0;
+    ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
+    // 创建IP头部
+}
+
 
 /**
  * 接受数据功能
