@@ -18,6 +18,9 @@
 
 #if ENABLE_SEND
 
+#define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
+static uint32_t gLocalIp = MAKE_IPV4_ADDR(192, 168, 79, 201); // dpdk端口设置的IP
+
 static uint32_t gSrcIp; // 全局的一对一 如果多个这种写法就不行了
 static uint32_t gDstIp;
 
@@ -168,6 +171,47 @@ static struct rte_mbuf *ng_send(struct rte_mempool *mbuf_pool, uint8_t *data, ui
     return mbuf;
 }
 
+#if ENABLE_ARP
+
+static int ng_encode_arp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
+    // 1 ethhdr
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
+    rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    eth->ether_type = htons(RTE_ETHER_TYPE_ARP);
+    // 2 arp
+    struct rte_arp_hdr *arp = (struct rte_arp_hdr *) (eth + 1);
+    arp->arp_hardware = htons(1);
+    arp->arp_protocol = htons(RTE_ETHER_TYPE_IPV4);
+    // 软件地址说得是ip地址 硬件地址说得是mac地址
+    arp->arp_hlen = RTE_ETHER_ADDR_LEN;
+    arp->arp_plen = sizeof(uint32_t);
+    arp->arp_opcode = htons(2); // response
+
+    rte_memcpy(arp->arp_data.arp_sha.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(arp->arp_data.arp_tha.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+
+    arp->arp_data.arp_sip = sip; // 发件人
+    arp->arp_data.arp_tip = dip; // 目标人
+    return 0;
+}
+
+static struct rte_mbuf *ng_send_arp(struct rte_mempool *mbuf_pool, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
+    const unsigned total_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
+    struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+    if (!mbuf) {
+        rte_exit(EXIT_FAILURE, "ng_send_arp rte_pktmbuf_alloc 分配内存失败\n");
+    }
+    mbuf->pkt_len = total_length;
+    mbuf->data_len = total_length;
+
+    uint8_t * pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
+    ng_encode_arp_pkt(pkt_data, dst_mac, sip, dip);
+    return mbuf;
+}
+
+#endif
+
 /**
  * 接受数据功能
  * @param argc
@@ -203,6 +247,32 @@ int main(int argc, char *argv[]) {
         for (i = 0; i < num_recvd; i++) {
 
             struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
+#if ENABLE_ARP
+            if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
+                // 偏移一个以太网的数据包的大小
+                struct rte_arp_hdr *arp_hdr =
+                        rte_pktmbuf_mtod_offset(mbufs[i], struct rte_arp_hdr*, sizeof(struct rte_ether_hdr));
+                struct in_addr addr;
+                // 调试代码
+                addr.s_addr = arp_hdr->arp_data.arp_tip; // 某个机器发送的目标IP
+                printf("arp ---> src: %s ", inet_ntoa(addr));
+                addr.s_addr = gLocalIp;
+                printf(" local: %s \n", inet_ntoa(addr));
+                // 如果目标IP和本机IP相同则处理(说明在广播获取本机IP以及mac地址) 返回自己的mac地址
+                // 目标IP发送本机的时候才处理 如果没有if的判断就是一个arp攻击
+                if (arp_hdr->arp_data.arp_tip == gLocalIp) {
+                    struct rte_mbuf *arpmbuf = ng_send_arp(mbuf_pool, arp_hdr->arp_data.arp_sha.addr_bytes,
+                                                          arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
+                    rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1);
+                    rte_pktmbuf_free(arpmbuf);
+                    rte_pktmbuf_free(mbufs[i]);
+                }
+                continue;
+            }
+#endif
+            // if (ehdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) { // 测试代码后续删除
+            //     continue;
+            // }
             if (ehdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
                 continue;
             }
