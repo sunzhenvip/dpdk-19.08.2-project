@@ -103,6 +103,7 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
     struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *) (msg + sizeof(struct rte_ether_hdr));
     ip->version_ihl = 0x45;
     ip->type_of_service = 0;
+    // htons 表示将16位的 主机字节序(人类可阅读的模式) 转换 为网络字节序
     ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
     ip->packet_id = 0;
     ip->fragment_offset = 0;
@@ -133,6 +134,7 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
     rte_ether_format_addr(src_mac_str, RTE_ETHER_ADDR_FMT_SIZE, &eth->s_addr);
     rte_ether_format_addr(dst_mac_str, RTE_ETHER_ADDR_FMT_SIZE, &eth->d_addr);
 
+    // ntohs 表示将16位的 网络字节序 转换 为主机字节序(人类可阅读的模式)
     printf("发送方 --> src: %s:%s:%d", src_mac_str, inet_ntoa(addr), ntohs(udp->src_port));
     printf("-->dst: %s:%s:%d\n", dst_mac_str, inet_ntoa(addr), ntohs(udp->dst_port));
     return 0;
