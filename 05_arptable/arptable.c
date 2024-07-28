@@ -7,9 +7,15 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 
+#include "arp.h"
+
 #define ENABLE_SEND        1
 #define ENABLE_ARP         1
 #define ENABLE_ICMP        1
+#define ENABLE_ARP_REPLY   1
+
+#define ENABLE_DEBUG       1
+#define ENABLE_TIMER       1
 
 
 #define NUM_MBUFS (4096-1)
@@ -31,6 +37,11 @@ static uint8_t gDstMac[RTE_ETHER_ADDR_LEN];
 static uint16_t gSrcPort;
 static uint16_t gDstPort;
 
+#endif
+
+#if ENABLE_ARP_REPLY
+// arp Broadcast 广播mac地址
+static uint8_t gDefaultArpMac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 #endif
 // 定义一个端口的id表示的是 绑定的网卡id
 int gDpdkPortId = 0;
@@ -343,11 +354,41 @@ int main(int argc, char *argv[]) {
                 // 如果目标IP和本机IP相同则处理(说明在广播获取本机IP以及mac地址) 返回自己的mac地址
                 // 目标IP发送本机的时候才处理 如果没有if的判断就是一个arp攻击
                 if (arp_hdr->arp_data.arp_tip == gLocalIp) {
+                    // arp发送 请求的代码
                     struct rte_mbuf *arpmbuf = ng_send_arp(mbuf_pool, arp_hdr->arp_data.arp_sha.addr_bytes,
                                                            arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
                     rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1);
                     rte_pktmbuf_free(arpmbuf);
                     rte_pktmbuf_free(mbufs[i]);
+                    // rte_cpu_to_be_16 16位整数从主机字节序转换为网络字节序（大端序）
+                } else if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
+                    // arp发送 响应的代码
+                    uint8_t * hwaddr = ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip);
+                    if (hwaddr == NULL) {
+                        printf("arp --> reply 响应\n");
+                        struct arp_table *table = arp_table_instance();
+
+                        struct arp_entry *entry = rte_malloc("arp_entry", sizeof(struct arp_entry), 0);
+                        if (entry) {
+                            // 初始化值设置0
+                            memset(entry, 0, sizeof(struct arp_entry));
+                            // 记录发送方的ip地址
+                            entry->ip = arp_hdr->arp_data.arp_sip;
+                            // 记录发送方的mac地址
+                            rte_memcpy(entry->hwaddr, arp_hdr->arp_data.arp_sha.addr_bytes, RTE_ETHER_ADDR_LEN);
+                            entry->type = ARP_ENTRY_STATUS_DYNAMIC; // 动态
+                            // 提高
+                            LL_ADD(entry, table->entries);
+                            // 暂开后的代码
+                            // entry->prev = ((void *) 0);
+                            // entry->next = table->entries;
+                            // if (table->entries != ((void *) 0)) {
+                            //     table->entries->prev = entry;
+                            // }
+                            // table->entries = entry;
+                            table->count++;
+                        }
+                    }
                 }
                 continue;
             }
