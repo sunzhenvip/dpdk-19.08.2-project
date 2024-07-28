@@ -227,19 +227,21 @@ int main(int argc, char *argv[]) {
     if (rte_eal_init(argc, argv) < 0) {
         rte_exit(EXIT_FAILURE, "Error with EAL init\n");
     }
-
+    // 初始化内存池 DPDK 一个进程确定一个内存池 内存会放在这个变量中
+    // 设置4K 8K都是可以的 这里我们设置一个特殊的值 不去满足2的N次方 比如设置4096-1的好处  小于4k的放在4K里面 大于4K的 放在另外大于4K的地方
     // 初始化内存池
-    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create("mbuf pool", NUM_MBUFS,
-                                                            0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create(
+            "mbuf pool", NUM_MBUFS, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
     if (mbuf_pool == NULL) {
         rte_exit(EXIT_FAILURE, "Could not create mbuf pool\n");
     }
-    // 初始化网口的信息
+    // 初始化获取网卡网口驱动信息
     ng_init_port(mbuf_pool);
     // 获取绑定的网口mac地址
     rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *) gSrcMac);
     while (1) {
-
+        // 接受数据的时候 包的数据量最大可以写入128个
+        // 如果超过128 可能会出错 机器网卡可能会重启 、丢弃还是重启 还不太确定 ，超出了机器可能会重启 或者宕机 具体要看什么情况
         struct rte_mbuf *mbufs[BURST_SIZE]; // 也可以设置大一点128个
         // 通过该方法接受网卡数据
         unsigned num_recvd = rte_eth_rx_burst(gDpdkPortId, 0, mbufs, BURST_SIZE);
