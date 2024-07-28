@@ -82,15 +82,6 @@ static void ng_init_port(struct rte_mempool *mbuf_pool) {
 
 }
 
-
-void print_mac(uint8_t *mac_addr);
-
-void print_mac(uint8_t *mac_addr) {
-    // 打印 MAC 地址，格式为 xx:xx:xx:xx:xx:xx
-    printf("%02x:%02x:%02x:%02x:%02x:%02x\n", mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4],
-           mac_addr[5]);
-}
-
 static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len) {
     // dpdp从最开始就创建了一个内存池
     // encode 打包成udp的包
