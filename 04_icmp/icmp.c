@@ -8,7 +8,8 @@
 #include <arpa/inet.h>
 
 #define ENABLE_SEND        1
-#define ENABLE_ARP        1
+#define ENABLE_ARP         1
+#define ENABLE_ICMP        1
 
 
 #define NUM_MBUFS (4096-1)
@@ -149,7 +150,7 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
  * @return
  */
 // mbuf 需要从内存池中获取 组装数据
-static struct rte_mbuf *ng_send(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) {
+static struct rte_mbuf *ng_send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) {
     // mempool --> mbuf 从内存池中获取一个mbuf ,使用内存池最小的单位是 mbuf
     // 从 内存池一次性拿多少数据出来
     // 14(以太网头大小) + 20(IPV4头大小) + 8(UDP头大小) + (剩余应用层数据大小.....)
@@ -212,6 +213,11 @@ static struct rte_mbuf *ng_send_arp(struct rte_mempool *mbuf_pool, uint8_t *dst_
     ng_encode_arp_pkt(pkt_data, dst_mac, sip, dip);
     return mbuf;
 }
+
+#endif
+
+
+#if ENABLE_ICMP
 
 #endif
 
@@ -325,7 +331,7 @@ int main(int argc, char *argv[]) {
                        upd_payload_len, (char *) (udphdr + 1));
 
 #if ENABLE_SEND
-                struct rte_mbuf *txmbuf = ng_send(mbuf_pool, (uint8_t *) (udphdr + 1), length);
+                struct rte_mbuf *txmbuf = ng_send_udp(mbuf_pool, (uint8_t *) (udphdr + 1), length);
                 rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
                 rte_pktmbuf_free(txmbuf);
 #endif
