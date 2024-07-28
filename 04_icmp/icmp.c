@@ -106,6 +106,7 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
     ip->version_ihl = 0x45;
     ip->type_of_service = 0;
     // htons 表示将16位的 主机字节序(人类可阅读的模式) 转换 为网络字节序
+    // ipv4头的total_length表示 ip层以及一下的所有的总字节数(包含ip本身字节-不包含以太网字节数据)
     ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
     ip->packet_id = 0;
     ip->fragment_offset = 0;
@@ -218,6 +219,81 @@ static struct rte_mbuf *ng_send_arp(struct rte_mempool *mbuf_pool, uint8_t *dst_
 
 
 #if ENABLE_ICMP
+
+// 处理imcp的checksum 该方法在网络rfc协议中可以查到对应的算法
+static uint16_t ng_checksum(uint16_t *addr, int count) {
+    register long sum = 0;
+    while (count > 1) {
+        sum += *(unsigned short *) addr++;
+        count -= 2;
+    }
+    if (count > 0) {
+        sum += *(unsigned char *) addr;
+    }
+    while (sum >> 16) {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    return ~sum;
+}
+
+static int ng_encode_icmp_pkt(uint8_t *msg, uint8_t *dst_mac,
+                              uint32_t sip, uint32_t dip, uint16_t id, uint16_t seqnb) {
+    // 1 ether
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
+    rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+    // 2 ip
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *) (msg + sizeof(struct rte_ether_hdr));
+    ip->version_ihl = 0x45;
+    ip->type_of_service = 0;
+    // htons 表示将16位的 主机字节序(人类可阅读的模式) 转换 为网络字节序
+    // ipv4头的total_length表示 ip层以及一下的所有的总字节数(包含ip本身字节-不包含以太网字节数据)
+    ip->total_length = htons(sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr));
+    ip->packet_id = 0;
+    ip->fragment_offset = 0;
+    ip->time_to_live = 64; // ttl = 64 默认值 如果写0  应该发不出去包
+    ip->next_proto_id = IPPROTO_ICMP;
+    ip->src_addr = sip;
+    ip->dst_addr = dip;
+    // 计算ip的checksum
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+    // 3 icmp
+    struct rte_icmp_hdr *icmp =
+            (struct rte_icmp_hdr *) (msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    icmp->icmp_type = RTE_IP_ICMP_ECHO_REPLY; // 应答
+    icmp->icmp_code = 0;
+    icmp->icmp_ident = id;
+    icmp->icmp_seq_nb = seqnb;
+
+    icmp->icmp_cksum = 0;
+    icmp->icmp_cksum = ng_checksum((uint16_t *) icmp, sizeof(struct rte_icmp_hdr));
+    return 0;
+}
+
+
+static struct rte_mbuf *ng_send_icmp(
+        struct rte_mempool *mbuf_pool, uint8_t *dst_mac, uint32_t sip, uint32_t dip, uint16_t id, uint16_t seqnb) {
+    // mempool --> mbuf 从内存池中获取一个mbuf ,使用内存池最小的单位是 mbuf
+    // 从 内存池一次性拿多少数据出来
+    const unsigned total_length =
+            sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_icmp_hdr);
+    // 开辟一个mbuf
+    struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+    if (!mbuf) {
+        rte_exit(EXIT_FAILURE, "icmp数据包分配内存失败rte_pktmbuf_alloc\n");
+    }
+    // 设置一下大小
+    mbuf->pkt_len = total_length;
+    mbuf->data_len = total_length;
+    // 从mbuf里面把对应的数据 请注意mbuf是一个结构体 这个结构体和具体存储的数据是分离的 需要拿到存储数据具体的位置
+    // 然后提供一个方法可以实现
+    uint8_t * pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *); // 强转数据
+    // 编码设置成->imcp需要的数据格式规范
+    ng_encode_icmp_pkt(pkt_data, dst_mac, sip, dip, id, seqnb);
+    return mbuf;
+}
 
 #endif
 
@@ -338,6 +414,28 @@ int main(int argc, char *argv[]) {
                 rte_pktmbuf_free(mbufs[i]);
             }
 
+#if ENABLE_ICMP
+            if (iphdr->next_proto_id == IPPROTO_ICMP) {
+                struct rte_icmp_hdr *icmphdr = (struct rte_icmp_hdr *) (iphdr + 1);
+                // 调试信息
+                struct in_addr addr;
+                addr.s_addr = iphdr->src_addr;
+                printf("icmp ---> src: %s ", inet_ntoa(addr));
+
+                if (icmphdr->icmp_type == RTE_IP_ICMP_ECHO_REQUEST) { // imcp ping 才回复
+                    // 调试信息
+                    addr.s_addr = iphdr->dst_addr;
+                    printf(" local: %s , type : %d\n", inet_ntoa(addr), icmphdr->icmp_type);
+
+                    struct rte_mbuf *txmbuf = ng_send_icmp(mbuf_pool, ehdr->s_addr.addr_bytes,
+                                                           iphdr->dst_addr, iphdr->src_addr,
+                                                           icmphdr->icmp_ident, icmphdr->icmp_seq_nb);
+                    rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
+                    rte_pktmbuf_free(txmbuf);
+                    rte_pktmbuf_free(mbufs[i]);
+                }
+            }
+#endif
         }
 
     }
