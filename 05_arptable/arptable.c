@@ -6,6 +6,7 @@
 
 #include <stdio.h>
 #include <arpa/inet.h>
+#include <rte_timer.h>
 
 #include "arp.h"
 
@@ -21,6 +22,7 @@
 #define NUM_MBUFS (4096-1)
 
 #define BURST_SIZE    32
+#define TIMER_RESOLUTION_CYCLES 120000000000ULL // 10ms * 1000 = 10s * 6
 
 
 #if ENABLE_SEND
@@ -180,11 +182,17 @@ static struct rte_mbuf *ng_send_udp(struct rte_mempool *mbuf_pool, uint8_t *data
 
 #if ENABLE_ARP
 
-static int ng_encode_arp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
+static int ng_encode_arp_pkt(uint8_t *msg, uint16_t opcode, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
     // 1 ethhdr
     struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
     rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
-    rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    // rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    if (!strncmp((const char *)dst_mac, (const char *)gDefaultArpMac, RTE_ETHER_ADDR_LEN)) {
+        uint8_t mac[RTE_ETHER_ADDR_LEN] = {0x0};
+        rte_memcpy(eth->d_addr.addr_bytes, mac, RTE_ETHER_ADDR_LEN);
+    } else {
+        rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
+    }
     eth->ether_type = htons(RTE_ETHER_TYPE_ARP);
     // 2 arp
     struct rte_arp_hdr *arp = (struct rte_arp_hdr *) (eth + 1);
@@ -193,7 +201,7 @@ static int ng_encode_arp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint3
     // 软件地址说得是ip地址 硬件地址说得是mac地址
     arp->arp_hlen = RTE_ETHER_ADDR_LEN;
     arp->arp_plen = sizeof(uint32_t);
-    arp->arp_opcode = htons(2); // response
+    arp->arp_opcode = htons(opcode); // response=RTE_ARP_OP_REPLY
 
     rte_memcpy(arp->arp_data.arp_sha.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
     rte_memcpy(arp->arp_data.arp_tha.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
@@ -203,7 +211,8 @@ static int ng_encode_arp_pkt(uint8_t *msg, uint8_t *dst_mac, uint32_t sip, uint3
     return 0;
 }
 
-static struct rte_mbuf *ng_send_arp(struct rte_mempool *mbuf_pool, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
+static struct rte_mbuf *
+ng_send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
     const unsigned total_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
@@ -213,7 +222,7 @@ static struct rte_mbuf *ng_send_arp(struct rte_mempool *mbuf_pool, uint8_t *dst_
     mbuf->data_len = total_length;
 
     uint8_t * pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
-    ng_encode_arp_pkt(pkt_data, dst_mac, sip, dip);
+    ng_encode_arp_pkt(pkt_data, opcode, dst_mac, sip, dip);
     return mbuf;
 }
 
@@ -299,6 +308,49 @@ static struct rte_mbuf *ng_send_icmp(
 
 #endif
 
+
+#if ENABLE_TIMER
+
+/**
+ * 定时器回调函数 多久执行一次
+ * (__attribute__((unused)) 意思是编译时不在警告改变量没有使用
+ * @param tim
+ * @param arg
+ */
+static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
+    printf("arp_request_timer_cb ...............\n");
+    // 传递的是内存池
+    // 定时发送arp请求
+    struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
+#if 0
+    struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, ahdr->arp_data.arp_sha.addr_bytes,
+        ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
+
+    rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
+    rte_pktmbuf_free(arpbuf);
+#endif
+    int i = 0;
+    // 局域网里每一天机器都发一次
+    for (i = 0; i < 254; i++) {
+        uint32_t dstip = (gLocalIp & 0x00FFFFFF) | (0xFF000000 & (i << 24));
+        struct in_addr addr;
+        addr.s_addr = dstip;
+        printf("arp_request_timer_cb arp ---> src: %s \n", inet_ntoa(addr));
+
+        struct rte_mbuf *arpbuf = NULL;
+        uint8_t * dstmac = ng_get_dst_macaddr(dstip);
+        if (dstmac == NULL) {
+            arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, gLocalIp, dstip);
+        } else {
+            arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, gLocalIp, dstip);
+        }
+        rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
+        rte_pktmbuf_free(arpbuf);
+    }
+}
+
+#endif
+
 /**
  * 接受数据功能
  * @param argc
@@ -323,6 +375,18 @@ int main(int argc, char *argv[]) {
     ng_init_port(mbuf_pool);
     // 获取绑定的网口mac地址
     rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *) gSrcMac);
+#if ENABLE_TIMER
+    // rte_timer 初始化
+    rte_timer_subsystem_init();
+    // 定义一个 初始化
+    struct rte_timer arp_timer;
+    rte_timer_init(&arp_timer);
+    // 获取它的频率
+    uint64_t hz = rte_get_timer_hz();
+    unsigned lcore_id = rte_lcore_id();
+    // PERIODICAL 代表重复的触发
+    rte_timer_reset(&arp_timer, hz, PERIODICAL, lcore_id, arp_request_timer_cb, mbuf_pool);
+#endif
     while (1) {
         // 接受数据的时候 包的数据量最大可以写入128个
         // 如果超过128 可能会出错 机器网卡可能会重启 、丢弃还是重启 还不太确定 ，超出了机器可能会重启 或者宕机 具体要看什么情况
@@ -355,14 +419,15 @@ int main(int argc, char *argv[]) {
                 // 目标IP发送本机的时候才处理 如果没有if的判断就是一个arp攻击
                 if (arp_hdr->arp_data.arp_tip == gLocalIp) {
                     // arp发送 请求的代码
-                    struct rte_mbuf *arpmbuf = ng_send_arp(mbuf_pool, arp_hdr->arp_data.arp_sha.addr_bytes,
-                                                           arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
+                    struct rte_mbuf *arpmbuf = ng_send_arp(
+                            mbuf_pool, RTE_ARP_OP_REPLY, arp_hdr->arp_data.arp_sha.addr_bytes,
+                            arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
                     rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1);
                     rte_pktmbuf_free(arpmbuf);
                     rte_pktmbuf_free(mbufs[i]);
                     // rte_cpu_to_be_16 16位整数从主机字节序转换为网络字节序（大端序）
                 } else if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
-                    // arp发送 响应的代码
+                    // 对方回应了 arp发送 响应的代码
                     uint8_t * hwaddr = ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip);
                     if (hwaddr == NULL) {
                         printf("arp --> reply 响应\n");
@@ -469,6 +534,30 @@ int main(int argc, char *argv[]) {
             }
 #endif
         }
+#if ENABLE_TIMER
+        // prev_tsc=之前  cur_tsc=当前 diff_tsc=差值
+        static uint64_t prev_tsc = 0, cur_tsc;
+        uint64_t diff_tsc;
+        // 用于获取处理器的时间戳计数器(TSC,Time Stamp Counter)的值。TSC是一个高精度的计时器，
+        // 由CPU的内部寄存器维护,它记录了自处理器上电以来的时钟周期数
+        // 提供了纳秒级精度的时间测量，非常适合用于测量短时间间隔（例如性能测试、延迟测量等)
+        // 在网络数据包处理等高性能计算场景中，可以使用 TSC 进行详细的性能分析和优化
+        cur_tsc = rte_rdtsc();
+        // 打印测试
+        // printf("cur_tsc = %lul\n", cur_tsc);
+        diff_tsc = cur_tsc - prev_tsc; // 当前时间 减去 之前的一次 得到一个差
+        if (diff_tsc > TIMER_RESOLUTION_CYCLES) { // diff_tsc 差值 大于 表示达到的触发时间
+            // 获取 TSC 频率
+            uint64_t tsc_hz = rte_get_tsc_hz();
+            // 换算成秒
+            double diff_seconds = (double) diff_tsc / tsc_hz;
+            // 打印差值的秒数
+            printf("diff_tsc= %lu diff_seconds= %f seconds\n", diff_tsc, diff_seconds);
+
+            rte_timer_manage();
+            prev_tsc = cur_tsc;
+        }
+#endif
 
     }
 
