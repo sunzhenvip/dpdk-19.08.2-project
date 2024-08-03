@@ -23,6 +23,7 @@
 
 #define BURST_SIZE    32
 #define TIMER_RESOLUTION_CYCLES 120000000000ULL // 10ms * 1000 = 10s * 6
+// 10ms at 2Ghz   20000000ULL = 10ms
 
 
 #if ENABLE_SEND
@@ -187,9 +188,10 @@ static int ng_encode_arp_pkt(uint8_t *msg, uint16_t opcode, uint8_t *dst_mac, ui
     struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
     rte_memcpy(eth->s_addr.addr_bytes, gSrcMac, RTE_ETHER_ADDR_LEN);
     // rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
-    if (!strncmp((const char *)dst_mac, (const char *)gDefaultArpMac, RTE_ETHER_ADDR_LEN)) {
-        uint8_t mac[RTE_ETHER_ADDR_LEN] = {0x0};
-        rte_memcpy(eth->d_addr.addr_bytes, mac, RTE_ETHER_ADDR_LEN);
+    if (!strncmp((const char *) dst_mac, (const char *) gDefaultArpMac, RTE_ETHER_ADDR_LEN)) {
+        // 该代码貌似有问题 wireshark抓包显示 广播地址应该就是 Destination: Broadcast (ff:ff:ff:ff:ff:ff) 而不是 0吧?
+        // uint8_t mac[RTE_ETHER_ADDR_LEN] = {0x0};
+        rte_memcpy(eth->d_addr.addr_bytes, gDefaultArpMac, RTE_ETHER_ADDR_LEN);
     } else {
         rte_memcpy(eth->d_addr.addr_bytes, dst_mac, RTE_ETHER_ADDR_LEN);
     }
@@ -309,6 +311,13 @@ static struct rte_mbuf *ng_send_icmp(
 #endif
 
 
+static void print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr) {
+    char buf[RTE_ETHER_ADDR_FMT_SIZE];
+    rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
+    printf("%s%s", name, buf);
+}
+
+
 #if ENABLE_TIMER
 
 /**
@@ -318,7 +327,7 @@ static struct rte_mbuf *ng_send_icmp(
  * @param arg
  */
 static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
-    printf("arp_request_timer_cb ...............\n");
+    printf("执行了定时任务 arp_request_timer_cb 方法  ...............\n");
     // 传递的是内存池
     // 定时发送arp请求
     struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
@@ -330,12 +339,13 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
     rte_pktmbuf_free(arpbuf);
 #endif
     int i = 0;
-    // 局域网里每一天机器都发一次
+    // 局域网里每一台机器都发一次
     for (i = 0; i < 254; i++) {
+        // for (i = 9; i <= 9; i++) {
         uint32_t dstip = (gLocalIp & 0x00FFFFFF) | (0xFF000000 & (i << 24));
-        struct in_addr addr;
-        addr.s_addr = dstip;
-        printf("arp_request_timer_cb arp ---> src: %s \n", inet_ntoa(addr));
+        // struct in_addr addr;
+        // addr.s_addr = dstip;
+        // printf("arp_request_timer_cb arp ---> src: %s \n", inet_ntoa(addr));
 
         struct rte_mbuf *arpbuf = NULL;
         uint8_t * dstmac = ng_get_dst_macaddr(dstip);
@@ -418,44 +428,55 @@ int main(int argc, char *argv[]) {
                 // 如果目标IP和本机IP相同则处理(说明在广播获取本机IP以及mac地址) 返回自己的mac地址
                 // 目标IP发送本机的时候才处理 如果没有if的判断就是一个arp攻击
                 if (arp_hdr->arp_data.arp_tip == gLocalIp) {
-                    // arp发送 请求的代码
-                    struct rte_mbuf *arpmbuf = ng_send_arp(
-                            mbuf_pool, RTE_ARP_OP_REPLY, arp_hdr->arp_data.arp_sha.addr_bytes,
-                            arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
-                    rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1);
-                    rte_pktmbuf_free(arpmbuf);
-                    rte_pktmbuf_free(mbufs[i]);
-                    // rte_cpu_to_be_16 16位整数从主机字节序转换为网络字节序（大端序）
-                } else if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
-                    // 对方回应了 arp发送 响应的代码
-                    uint8_t * hwaddr = ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip);
-                    if (hwaddr == NULL) {
-                        printf("arp --> reply 响应\n");
+                    if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REQUEST)) {
+                        // arp发送 请求的代码
+                        struct rte_mbuf *arpmbuf = ng_send_arp(
+                                mbuf_pool, RTE_ARP_OP_REPLY, arp_hdr->arp_data.arp_sha.addr_bytes,
+                                arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
+                        rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1);
+                        rte_pktmbuf_free(arpmbuf);
+                        rte_pktmbuf_free(mbufs[i]);
+                        // rte_cpu_to_be_16 16位整数从主机字节序转换为网络字节序（大端序）
+                    } else if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
+                        // 对方回应了 arp发送 响应的代码
+                        uint8_t * hwaddr = ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip);
+                        printf("arp --> 回应数据包 RTE_ARP_OP_REPLY \n");
                         struct arp_table *table = arp_table_instance();
-
-                        struct arp_entry *entry = rte_malloc("arp_entry", sizeof(struct arp_entry), 0);
-                        if (entry) {
-                            // 初始化值设置0
-                            memset(entry, 0, sizeof(struct arp_entry));
-                            // 记录发送方的ip地址
-                            entry->ip = arp_hdr->arp_data.arp_sip;
-                            // 记录发送方的mac地址
-                            rte_memcpy(entry->hwaddr, arp_hdr->arp_data.arp_sha.addr_bytes, RTE_ETHER_ADDR_LEN);
-                            entry->type = ARP_ENTRY_STATUS_DYNAMIC; // 动态
-                            // 提高
-                            LL_ADD(entry, table->entries);
-                            // 暂开后的代码
-                            // entry->prev = ((void *) 0);
-                            // entry->next = table->entries;
-                            // if (table->entries != ((void *) 0)) {
-                            //     table->entries->prev = entry;
-                            // }
-                            // table->entries = entry;
-                            table->count++;
+                        if (hwaddr == NULL) {
+                            printf("arp --> ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip) == NULL \n");
+                            struct arp_entry *entry = rte_malloc("arp_entry", sizeof(struct arp_entry), 0);
+                            if (entry) {
+                                // 初始化值设置0
+                                memset(entry, 0, sizeof(struct arp_entry));
+                                // 记录发送方的ip地址
+                                entry->ip = arp_hdr->arp_data.arp_sip;
+                                // 记录发送方的mac地址
+                                rte_memcpy(entry->hwaddr, arp_hdr->arp_data.arp_sha.addr_bytes, RTE_ETHER_ADDR_LEN);
+                                entry->type = ARP_ENTRY_STATUS_DYNAMIC; // 动态
+                                // 提高
+                                LL_ADD(entry, table->entries);
+                                // 展开后的代码
+                                // entry->prev = ((void *) 0);
+                                // entry->next = table->entries;
+                                // if (table->entries != ((void *) 0)) {
+                                //     table->entries->prev = entry;
+                                // }
+                                // table->entries = entry;
+                                table->count++;
+                            }
                         }
+#if ENABLE_DEBUG
+                        struct arp_entry *iter;
+                        for (iter = table->entries; iter != NULL; iter = iter->next) {
+                            struct in_addr addr;
+                            addr.s_addr = iter->ip;
+                            print_ethaddr("arp table --> mac: ", (struct rte_ether_addr *) iter->hwaddr);
+                            printf(" ip: %s \n", inet_ntoa(addr));
+                        }
+#endif
                     }
+                    continue;
                 }
-                continue;
             }
 #endif
             // if (ehdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) { // 测试代码后续删除
