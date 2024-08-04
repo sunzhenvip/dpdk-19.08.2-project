@@ -771,8 +771,14 @@ static int udp_out(struct rte_mempool *mbuf_pool) {
     return 0;
 }
 
-
-int socket(__attribute__((unused)) int domain, int type, int protocol) {
+/**
+ * hook 钩子函数  socket 和系统函数冲突 修改名字为 nsocket
+ * @param domain
+ * @param type
+ * @param protocol
+ * @return
+ */
+int nsocket(__attribute__((unused)) int domain, int type, int protocol) {
     // bit map
     int fd = get_fd_frombitmap(); //分配一个可用的fd
     // struct localhost *host = (struct localhost *) malloc(sizeof(struct localhost));
@@ -821,7 +827,12 @@ int bind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) sockle
     return 0;
 }
 
-ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addr_len);
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addr_len) {
+    struct localhost *host = get_hostinfo_fromfd(sockfd);
+    if (host == NULL) {
+        return -1;
+    }
+}
 
 ssize_t
 sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len);
@@ -856,7 +867,7 @@ int close(int sockfd) {
  */
 static int udp_server_entry(__attribute__((unused))  void *arg) {
     // connfd 生命周期 socket分配一个 fd 唯一值 对应(local_ip local_port)
-    int connfd = socket(AF_INET, SOCK_DGRAM, 0);
+    int connfd = nsocket(AF_INET, SOCK_DGRAM, 0);
     if (connfd == -1) {
         printf("sockfd failed\n");
         return -1;
