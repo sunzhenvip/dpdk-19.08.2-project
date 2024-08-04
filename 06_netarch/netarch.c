@@ -17,11 +17,16 @@
 
 #define ENABLE_DEBUG       1
 #define ENABLE_TIMER       1
+// ring buffer 开关
+#define ENABLE_RINGBUFFER  1
+// 多线程开关
+#define ENABLE_MULTHREAD   1
 
 
 #define NUM_MBUFS (4096-1)
 
 #define BURST_SIZE    32
+#define RING_SIZE     1024
 #define TIMER_RESOLUTION_CYCLES 120000000000ULL // 10ms * 1000 = 10s * 6
 // 10ms at 2Ghz   20000000ULL = 10ms
 
@@ -46,6 +51,27 @@ static uint16_t gDstPort;
 // arp Broadcast 广播mac地址
 static uint8_t gDefaultArpMac[RTE_ETHER_ADDR_LEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 #endif
+
+
+#if ENABLE_RINGBUFFER
+struct inout_ring {
+    struct rte_ring *in;
+    struct rte_ring *out;
+};
+struct inout_ring *rInst = NULL;
+
+// 初始化 ring Buffer 单例
+static struct inout_ring *ringInstance(void) {
+    if (rInst == NULL) {
+        rInst = rte_malloc("in/out ring", sizeof(struct inout_ring), 0);
+        memset(rInst, 0, sizeof(struct inout_ring)); // 初始化数据
+    }
+    return rInst;
+}
+
+#endif
+
+
 // 定义一个端口的id表示的是 绑定的网卡id
 int gDpdkPortId = 0;
 // 设置端口配置信息
@@ -331,6 +357,7 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
     // 传递的是内存池
     // 定时发送arp请求
     struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
+    struct inout_ring *ring = ringInstance();
 #if 0
     struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, ahdr->arp_data.arp_sha.addr_bytes,
         ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
@@ -354,62 +381,28 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
         } else {
             arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, dstmac, gLocalIp, dstip);
         }
-        rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
-        rte_pktmbuf_free(arpbuf);
+        // rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
+        // rte_pktmbuf_free(arpbuf);
+        // 把需要发送的数据入队到 ring Buffer(线程安全的)
+        rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
     }
 }
 
 #endif
 
-/**
- * 接受数据功能
- * @param argc
- * @param argv
- * @return
- */
-int main(int argc, char *argv[]) {
-    // DPDK 的环境初始化
-    // 检查大页巨页 hugepage 有没有进行设置
-    if (rte_eal_init(argc, argv) < 0) {
-        rte_exit(EXIT_FAILURE, "Error with EAL init\n");
-    }
-    // 初始化内存池 DPDK 一个进程确定一个内存池 内存会放在这个变量中
-    // 设置4K 8K都是可以的 这里我们设置一个特殊的值 不去满足2的N次方 比如设置4096-1的好处  小于4k的放在4K里面 大于4K的 放在另外大于4K的地方
-    // 初始化内存池
-    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create(
-            "mbuf pool", NUM_MBUFS, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
-    if (mbuf_pool == NULL) {
-        rte_exit(EXIT_FAILURE, "Could not create mbuf pool\n");
-    }
-    // 初始化获取网卡网口驱动信息
-    ng_init_port(mbuf_pool);
-    // 获取绑定的网口mac地址
-    rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *) gSrcMac);
-#if ENABLE_TIMER
-    // rte_timer 初始化
-    rte_timer_subsystem_init();
-    // 定义一个 初始化
-    struct rte_timer arp_timer;
-    rte_timer_init(&arp_timer);
-    // 获取它的频率
-    uint64_t hz = rte_get_timer_hz();
-    unsigned lcore_id = rte_lcore_id();
-    // PERIODICAL 代表重复的触发
-    rte_timer_reset(&arp_timer, hz, PERIODICAL, lcore_id, arp_request_timer_cb, mbuf_pool);
-#endif
-    while (1) {
-        // 接受数据的时候 包的数据量最大可以写入128个
-        // 如果超过128 可能会出错 机器网卡可能会重启 、丢弃还是重启 还不太确定 ，超出了机器可能会重启 或者宕机 具体要看什么情况
-        struct rte_mbuf *mbufs[BURST_SIZE]; // 也可以设置大一点128个
-        // 通过该方法接受网卡数据
-        unsigned num_recvd = rte_eth_rx_burst(gDpdkPortId, 0, mbufs, BURST_SIZE);
-        if (num_recvd > BURST_SIZE) {
-            rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
-        }
+#if ENABLE_MULTHREAD
 
+static int pkt_process(void *arg) {
+    // 内存池对象转换
+    struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
+    struct inout_ring *ring = ringInstance();
+
+    while (1) {
+        struct rte_mbuf *mbufs[BURST_SIZE];
+        // 取数据 出队 支持多消费者安全
+        unsigned num_recvd = rte_ring_mc_dequeue_burst(ring->in, (void **) mbufs, BURST_SIZE, NULL);
         unsigned i = 0;
         for (i = 0; i < num_recvd; i++) {
-
             struct rte_ether_hdr *ehdr = rte_pktmbuf_mtod(mbufs[i], struct rte_ether_hdr*);
 #if ENABLE_ARP
             if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
@@ -433,9 +426,10 @@ int main(int argc, char *argv[]) {
                         struct rte_mbuf *arpmbuf = ng_send_arp(
                                 mbuf_pool, RTE_ARP_OP_REPLY, arp_hdr->arp_data.arp_sha.addr_bytes,
                                 arp_hdr->arp_data.arp_tip, arp_hdr->arp_data.arp_sip);
-                        rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1);
-                        rte_pktmbuf_free(arpmbuf);
-                        rte_pktmbuf_free(mbufs[i]);
+                        // rte_eth_tx_burst(gDpdkPortId, 0, &arpmbuf, 1); 先屏蔽
+                        // 把需要发送的数据入队到 ring Buffer(线程安全的)
+                        rte_ring_mp_enqueue_burst(ring->out, (void **) &arpmbuf, 1, NULL);
+                        // rte_pktmbuf_free(arpmbuf); 先屏蔽
                         // rte_cpu_to_be_16 16位整数从主机字节序转换为网络字节序（大端序）
                     } else if (arp_hdr->arp_opcode == rte_cpu_to_be_16(RTE_ARP_OP_REPLY)) {
                         // 对方回应了 arp发送 响应的代码
@@ -474,6 +468,7 @@ int main(int argc, char *argv[]) {
                             printf(" ip: %s \n", inet_ntoa(addr));
                         }
 #endif
+                        rte_pktmbuf_free(mbufs[i]);
                     }
                     continue;
                 }
@@ -526,8 +521,10 @@ int main(int argc, char *argv[]) {
 
 #if ENABLE_SEND
                 struct rte_mbuf *txmbuf = ng_send_udp(mbuf_pool, (uint8_t *) (udphdr + 1), length);
-                rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
-                rte_pktmbuf_free(txmbuf);
+                // rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
+                // rte_pktmbuf_free(txmbuf);
+                // 把需要发送的数据入队到 ring Buffer(线程安全的)
+                rte_ring_mp_enqueue_burst(ring->out, (void **) &txmbuf, 1, NULL);
 #endif
                 rte_pktmbuf_free(mbufs[i]);
             }
@@ -548,13 +545,112 @@ int main(int argc, char *argv[]) {
                     struct rte_mbuf *txmbuf = ng_send_icmp(mbuf_pool, ehdr->s_addr.addr_bytes,
                                                            iphdr->dst_addr, iphdr->src_addr,
                                                            icmphdr->icmp_ident, icmphdr->icmp_seq_nb);
-                    rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
-                    rte_pktmbuf_free(txmbuf);
+                    // rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
+                    // rte_pktmbuf_free(txmbuf);
+                    // 把需要发送的数据入队到 ring Buffer(线程安全的)
+                    rte_ring_mp_enqueue_burst(ring->out, (void **) &txmbuf, 1, NULL);
+
                     rte_pktmbuf_free(mbufs[i]);
                 }
             }
 #endif
         }
+    }
+    return 0;
+}
+
+#endif
+
+/**
+ * 接受数据功能
+ * @param argc
+ * @param argv
+ * @return
+ */
+int main(int argc, char *argv[]) {
+    // DPDK 的环境初始化
+    // 检查大页巨页 hugepage 有没有进行设置
+    if (rte_eal_init(argc, argv) < 0) {
+        rte_exit(EXIT_FAILURE, "Error with EAL init\n");
+    }
+    // 初始化内存池 DPDK 一个进程确定一个内存池 内存会放在这个变量中
+    // 设置4K 8K都是可以的 这里我们设置一个特殊的值 不去满足2的N次方 比如设置4096-1的好处  小于4k的放在4K里面 大于4K的 放在另外大于4K的地方
+    // 初始化内存池
+    struct rte_mempool *mbuf_pool = rte_pktmbuf_pool_create(
+            "mbuf pool", NUM_MBUFS, 0, 0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+    if (mbuf_pool == NULL) {
+        rte_exit(EXIT_FAILURE, "Could not create mbuf pool\n");
+    }
+    // 初始化获取网卡网口驱动信息
+    ng_init_port(mbuf_pool);
+    // 获取绑定的网口mac地址
+    rte_eth_macaddr_get(gDpdkPortId, (struct rte_ether_addr *) gSrcMac);
+#if ENABLE_TIMER
+    // rte_timer 初始化
+    rte_timer_subsystem_init();
+    // 定义一个 初始化
+    struct rte_timer arp_timer;
+    rte_timer_init(&arp_timer);
+    // 获取它的频率
+    uint64_t hz = rte_get_timer_hz();
+    unsigned lcore_id = rte_lcore_id();
+    // PERIODICAL 代表重复的触发
+    rte_timer_reset(&arp_timer, hz, PERIODICAL, lcore_id, arp_request_timer_cb, mbuf_pool);
+#endif
+
+#if ENABLE_MULTHREAD
+    struct inout_ring *ring = ringInstance();
+    if (ring == NULL) {
+        rte_exit(EXIT_FAILURE, "Could not create ring\n");
+    }
+    // 在内存中间分配两个ring
+    // RING_F_SP_ENQ 单生产者入队的标志、使用这个标志意味着在环形缓冲区中只有一个生产者线程会进行入队操作
+    // RING_F_SC_DEQ 单消费者出队的标志。使用这个标志意味着在环形缓冲区中只有一个消费者线程会进行出队操作
+    // RING_F_SP_ENQ|RING_F_SC_DEQ 这两个标志一起使用，表示该环形缓冲区是单生产者、单消费者模型。这种模型下，环形缓冲区的入队和出队操作都不需要使用锁，从而提高了性能。
+    if (ring->in == NULL) {
+        ring->in = rte_ring_create("in ring", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    }
+    // 在内存中间分配一个ring
+    if (ring->out == NULL) {
+        ring->out = rte_ring_create("out ring", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    }
+    // 三个入队 三个出队
+    // 多个地方入队 多线程的话使用 rte_ring_mp_enqueue_burst()
+    // 不是线程安全的 如果只有一个地方入队可以使用这个 rte_ring_sp_enqueue_burst()
+    // 出队
+    // enqueue --> in ring
+#endif
+#if ENABLE_MULTHREAD
+    // 启动多线程 暂时开一个线程 处理数据包 跟cpu绑定的 一一对应的
+    rte_eal_remote_launch(pkt_process, mbuf_pool, rte_get_next_lcore(lcore_id, 1, 0));
+#endif
+    while (1) {
+        // rx
+        // 接受数据的时候 包的数据量最大可以写入128个
+        // 如果超过128 可能会出错 机器网卡可能会重启 、丢弃还是重启 还不太确定 ，超出了机器可能会重启 或者宕机 具体要看什么情况
+        struct rte_mbuf *rx[BURST_SIZE]; // 也可以设置大一点128个
+        // 通过该方法接受网卡数据
+        unsigned num_recvd = rte_eth_rx_burst(gDpdkPortId, 0, rx, BURST_SIZE);
+        if (num_recvd > BURST_SIZE) {
+            rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
+        } else if (num_recvd > 0) { // 如果大于0 直接就入队了
+            rte_ring_sp_enqueue_burst(ring->in, (void **) rx, num_recvd, NULL);
+        }
+        // tx
+        struct rte_mbuf *tx[BURST_SIZE];
+        // 批量方式出队的函数
+        // 适用于单消费者模式 即环形缓冲区中只有一个线程会进行出队操作。使用单消费者模式可以避免使用锁，从而提高性能
+        unsigned nb_tx = rte_ring_sc_dequeue_burst(ring->out, (void **) tx, BURST_SIZE, NULL);
+        if (nb_tx > 0) {
+            // 发送数据到网卡
+            rte_eth_tx_burst(gDpdkPortId, 0, tx, nb_tx);
+
+            unsigned i = 0;
+            for (i = 0; i < nb_tx; i++) {
+                rte_pktmbuf_free(tx[i]); // 释放
+            }
+        }
+
 #if ENABLE_TIMER
         // prev_tsc=之前  cur_tsc=当前 diff_tsc=差值
         static uint64_t prev_tsc = 0, cur_tsc;
