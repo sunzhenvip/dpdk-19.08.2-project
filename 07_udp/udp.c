@@ -5,6 +5,7 @@
 #include <rte_mbuf.h>
 
 #include <stdio.h>
+#include <unistd.h>
 #include <arpa/inet.h>
 #include <rte_timer.h>
 
@@ -21,6 +22,8 @@
 #define ENABLE_RINGBUFFER  1
 // 多线程开关
 #define ENABLE_MULTHREAD   1
+// upd server 服务开关
+#define ENABLE_UDP_APP     1
 
 
 #define NUM_MBUFS (4096-1)
@@ -71,6 +74,13 @@ static struct inout_ring *ringInstance(void) {
 
 #endif
 
+#if ENABLE_UDP_APP
+
+static int udp_process(struct rte_mbuf *udpmbuf);
+
+static int udp_out(struct rte_mempool *mbuf_pool);
+
+#endif
 
 // 定义一个端口的id表示的是 绑定的网卡id
 int gDpdkPortId = 0;
@@ -392,6 +402,11 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
 
 #if ENABLE_MULTHREAD
 
+/**
+ * 接收 ring->in buffer 取出网卡数据包队列线程
+ * @param arg DPDK内存池对象
+ * @return
+ */
 static int pkt_process(void *arg) {
     // 内存池对象转换
     struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
@@ -399,7 +414,7 @@ static int pkt_process(void *arg) {
 
     while (1) {
         struct rte_mbuf *mbufs[BURST_SIZE];
-        // 取数据 出队 支持多消费者安全
+        // 取数据 出队 支持多消费者安全 每次可以出队多个对象，最多 n 个对象。
         unsigned num_recvd = rte_ring_mc_dequeue_burst(ring->in, (void **) mbufs, BURST_SIZE, NULL);
         unsigned i = 0;
         for (i = 0; i < num_recvd; i++) {
@@ -486,47 +501,7 @@ static int pkt_process(void *arg) {
 
             if (iphdr->next_proto_id == IPPROTO_UDP) {
 
-                // struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) (iphdr + 1);
-                // 上一行代码修正版
-                struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) ((char *) iphdr + sizeof(struct rte_ipv4_hdr));
-                if (ntohs (udphdr->src_port) != 8888) { // 做测试用的 可以后期删除
-                    continue;
-                }
-
-#if ENABLE_SEND //
-                rte_memcpy(gDstMac, ehdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
-
-                rte_memcpy(&gSrcIp, &iphdr->dst_addr, sizeof(uint32_t));
-                rte_memcpy(&gDstIp, &iphdr->src_addr, sizeof(uint32_t));
-
-                rte_memcpy(&gSrcPort, &udphdr->dst_port, sizeof(uint16_t));
-                rte_memcpy(&gDstPort, &udphdr->src_port, sizeof(uint16_t));
-#endif
-
-                // 网络字节顺什么时候转换 两个字节以上包含两个字节
-                uint16_t length = ntohs(udphdr->dgram_len);
-                // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
-                *((char *) udphdr + length) = '\0';
-
-                uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
-
-
-                struct in_addr addr;
-                addr.s_addr = iphdr->src_addr;
-                printf("接收方 src: %s:%d--->", inet_ntoa(addr), ntohs(udphdr->src_port));
-
-                addr.s_addr = iphdr->dst_addr;
-                printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port),
-                       upd_payload_len, (char *) (udphdr + 1));
-
-#if ENABLE_SEND
-                struct rte_mbuf *txmbuf = ng_send_udp(mbuf_pool, (uint8_t *) (udphdr + 1), length);
-                // rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
-                // rte_pktmbuf_free(txmbuf);
-                // 把需要发送的数据入队到 ring Buffer(线程安全的)
-                rte_ring_mp_enqueue_burst(ring->out, (void **) &txmbuf, 1, NULL);
-#endif
-                rte_pktmbuf_free(mbufs[i]);
+                udp_process(mbufs[i]);
             }
 
 #if ENABLE_ICMP
@@ -560,6 +535,364 @@ static int pkt_process(void *arg) {
 }
 
 #endif
+
+
+static struct localhost *lhost = NULL;
+
+// connfd--> 对应底层就是 struct localhost
+struct localhost {
+    int fd;
+
+    uint32_t localip; // ip --> mac
+    uint8_t localmac[RTE_ETHER_ADDR_LEN];
+    uint16_t localport;
+
+    int protocol;
+    struct rte_ring *sndbuf;
+    struct rte_ring *rcvbuf;
+
+    // 连接数超级多的时候不建议使用链表 推荐使用 红黑树
+    struct localhost *prev; // 加入链表里面
+    struct localhost *next; // 为了做多个链接
+
+    pthread_cond_t cond;
+    pthread_mutex_t mutex;
+
+};
+
+
+#define DEFAULT_FD_NUM    3
+
+static int get_fd_frombitmap(void) {
+    int fd = DEFAULT_FD_NUM; // 先写死
+    return fd;
+}
+
+/**
+ * 通过pf查找是那个会话
+ * @param sockfd
+ * @return
+ */
+static struct localhost *get_hostinfo_fromfd(int sockfd) {
+    struct localhost *host;
+    for (host = lhost; host != NULL; host = host->next) {
+        if (sockfd == host->fd) {
+            return host;
+        }
+    }
+    return NULL;
+}
+
+static struct localhost *get_hostinfo_fromip_port(uint32_t dip, uint16_t port, uint8_t proto) {
+    struct localhost *host;
+    for (host = lhost; host != NULL; host = host->next) {
+        if (dip == host->localip && port == host->localport && proto == host->protocol) {
+            return host;
+        }
+    }
+    return NULL;
+}
+
+
+// arp
+struct offload {
+
+    uint32_t sip;
+    uint32_t dip;
+
+    uint16_t sport;
+    uint16_t dport;
+
+    int protocol;
+
+    unsigned char *data;
+    uint16_t length;
+
+};
+
+/**
+ * 处理 UDP server 线程
+ * @param udpmbuf
+ * @return
+ */
+static int udp_process(struct rte_mbuf *udpmbuf) {
+    struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(udpmbuf, struct rte_ipv4_hdr *,
+                                                         sizeof(struct rte_ether_hdr));
+
+    // struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) (iphdr + 1);
+    // 上一行代码修正版
+    struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) ((char *) iphdr + sizeof(struct rte_ipv4_hdr));
+    // if (ntohs (udphdr->src_port) != 8888) { // 做测试用的 可以后期删除
+    //     continue;
+    // }
+#if ENABLE_SEND //
+    rte_memcpy(gDstMac, ehdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+
+    rte_memcpy(&gSrcIp, &iphdr->dst_addr, sizeof(uint32_t));
+    rte_memcpy(&gDstIp, &iphdr->src_addr, sizeof(uint32_t));
+
+    rte_memcpy(&gSrcPort, &udphdr->dst_port, sizeof(uint16_t));
+    rte_memcpy(&gDstPort, &udphdr->src_port, sizeof(uint16_t));
+#endif
+
+    // 网络字节顺什么时候转换 两个字节以上包含两个字节
+    uint16_t length = ntohs(udphdr->dgram_len);
+    // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
+    *((char *) udphdr + length) = '\0';
+
+    uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
+
+
+    struct in_addr addr;
+    addr.s_addr = iphdr->src_addr;
+    printf("接收方 src: %s:%d--->", inet_ntoa(addr), ntohs(udphdr->src_port));
+
+    addr.s_addr = iphdr->dst_addr;
+    printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port),
+           upd_payload_len, (char *) (udphdr + 1));
+
+// #if ENABLE_SEND
+//     struct rte_mbuf *txmbuf = ng_send_udp(mbuf_pool, (uint8_t *) (udphdr + 1), length);
+//     // rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
+//     // rte_pktmbuf_free(txmbuf);
+//     // 把需要发送的数据入队到 ring Buffer(线程安全的)
+//     rte_ring_mp_enqueue_burst(ring->out, (void **) &txmbuf, 1, NULL);
+// #endif
+    rte_pktmbuf_free(udpmbuf);
+    return 0;
+}
+
+static int ng_encode_udp_apppkt(
+        uint8_t *msg, uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport, uint8_t *srcmac, uint8_t *dstmac,
+        unsigned char *data, uint16_t total_len) {
+
+    // dpdp从最开始就创建了一个内存池
+    // encode 打包成udp的包
+    // 1 ethhdr
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
+    rte_memcpy(eth->s_addr.addr_bytes, srcmac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(eth->d_addr.addr_bytes, dstmac, RTE_ETHER_ADDR_LEN);
+
+    // 两个字节以上都转 本地字节序 转换到 网络字节序
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+    // 2 ipv4hdr 偏移
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *) (msg + sizeof(struct rte_ether_hdr));
+    ip->version_ihl = 0x45;
+    ip->type_of_service = 0;
+    // htons 表示将16位的 主机字节序(人类可阅读的模式) 转换 为网络字节序
+    // ipv4头的total_length表示 ip层以及一下的所有的总字节数(包含ip本身字节-不包含以太网字节数据)
+    ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
+    ip->packet_id = 0;
+    ip->fragment_offset = 0;
+    ip->time_to_live = 64; // ttl = 64 默认值 如果写0  应该发不出去包
+    ip->next_proto_id = IPPROTO_UDP;
+    ip->src_addr = sip;
+    ip->dst_addr = dip;
+
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+    // 3 udphdr 偏移
+    struct rte_udp_hdr *udp = (struct rte_udp_hdr *) (msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    udp->src_port = sport;
+    udp->dst_port = dport;
+    uint16_t udplen = total_len - sizeof(struct rte_ether_hdr) - sizeof(struct rte_ipv4_hdr);
+    udp->dgram_len = htons(udplen);
+    // 从  (udp + 1) 位置 复制udplen个字节
+    rte_memcpy((uint8_t *) (udp + 1), data, udplen);
+    udp->dgram_cksum = 0;
+    udp->dgram_cksum = rte_ipv4_udptcp_cksum(ip, udp); // l4表示第四层
+
+    // 打印测试
+    struct in_addr addr;
+    addr.s_addr = sip;
+    addr.s_addr = dip;
+    char src_mac_str[RTE_ETHER_ADDR_FMT_SIZE];
+    char dst_mac_str[RTE_ETHER_ADDR_FMT_SIZE];
+    rte_ether_format_addr(src_mac_str, RTE_ETHER_ADDR_FMT_SIZE, &eth->s_addr);
+    rte_ether_format_addr(dst_mac_str, RTE_ETHER_ADDR_FMT_SIZE, &eth->d_addr);
+
+    // ntohs 表示将16位的 网络字节序 转换 为主机字节序(人类可阅读的模式)
+    printf("发送方 --> src: %s:%s:%d", src_mac_str, inet_ntoa(addr), ntohs(udp->src_port));
+    printf("-->dst: %s:%s:%d\n", dst_mac_str, inet_ntoa(addr), ntohs(udp->dst_port));
+    return 0;
+}
+
+static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, uint32_t dip,
+                                   uint16_t sport, uint16_t dport, uint8_t *srcmac, uint8_t *dstmac,
+                                   uint8_t *data, uint16_t length) {
+    // mempool --> mbuf 从内存池中获取一个mbuf ,使用内存池最小的单位是 mbuf
+    // 从 内存池一次性拿多少数据出来
+    // 14(以太网头大小) + 20(IPV4头大小) + 8(UDP头大小) + (剩余应用层数据大小.....)
+    // const static
+    // 没有减8看情况应该是一个bug
+    // 42(以太网头大小+IPV4头大小+UDP头大小)
+    const unsigned total_len = 42 + length - 8; // 可能需要减8(length包含了UDP头大小)
+    struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+    if (!mbuf) {
+        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
+    }
+    mbuf->pkt_len = total_len;
+    mbuf->data_len = total_len;
+
+    uint8_t * pktdata = rte_pktmbuf_mtod(mbuf, uint8_t *);
+    ng_encode_udp_apppkt(pktdata, sip, dip, sport, dport, srcmac, dstmac, data, total_len);
+    return mbuf;
+}
+
+
+static int udp_out(struct rte_mempool *mbuf_pool) {
+    struct localhost *host;
+    for (host = lhost; host != NULL; host = host->next) {
+        struct offload *ol;
+        // consumer 多线程消费者安全模式下 从环形队列中出队单个对象
+        int nb_snd = rte_ring_mc_dequeue(host->sndbuf, (void **) &ol);
+        // rte_ring_mc_dequeue_bulk rte_ring_mc_dequeue_burst
+        if (nb_snd < 0) {
+            continue;
+        }
+        uint8_t * dstmac = ng_get_dst_macaddr(ol->dip);
+        if (dstmac == NULL) { // 没有的话 需要发一次arp数据包过去
+            struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, ol->sip, ol->dip);
+
+            struct inout_ring *ring = ringInstance();
+            // 把需要发送的数据入队到 ring Buffer(线程安全的)
+            rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
+            // 在次写回到sndbuf中？ 没明白此举含义
+            rte_ring_mp_enqueue(host->sndbuf, ol);
+        } else {
+            struct rte_mbuf *udpbuf = ng_udp_pkt(
+                    mbuf_pool, ol->sip, ol->dip, ol->sport, ol->dport, host->localmac, dstmac, ol->data, ol->length);
+
+            struct inout_ring *ring = ringInstance();
+            // 把需要发送的数据入队到 ring Buffer(线程安全的)
+            rte_ring_mp_enqueue_burst(ring->out, (void **) &udpbuf, 1, NULL);
+        }
+    }
+    return 0;
+}
+
+
+int socket(__attribute__((unused)) int domain, int type, int protocol) {
+    // bit map
+    int fd = get_fd_frombitmap(); //分配一个可用的fd
+    // struct localhost *host = (struct localhost *) malloc(sizeof(struct localhost));
+    struct localhost *host = rte_malloc("localhost", sizeof(struct localhost), 0);
+    if (host == NULL) { //创建失败
+        return -1;
+    }
+    host->fd = fd;
+    if (type == SOCK_DGRAM) {
+        host->protocol = IPPROTO_UDP;
+    }
+    // Makefile
+    // else if (type == SOCK_STREAM) {
+    //     host->protocol = IPPROTO_TCP;
+    // }
+    // 创建 ring buffer
+    host->rcvbuf = rte_ring_create("recv buffer", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (host->rcvbuf == NULL) {
+        rte_free(host);
+        return -1;
+    }
+    // 创建 ring buffer
+    host->sndbuf = rte_ring_create("send buffer", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
+    if (host->sndbuf == NULL) {
+        rte_ring_free(host->rcvbuf);
+        rte_free(host);
+        return -1;
+    }
+    // 将新创建的host添加到链表中
+    LL_ADD(host, lhost);
+    return fd;
+}
+
+
+int bind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) socklen_t addr_len) {
+    struct localhost *host = get_hostinfo_fromfd(sockfd);
+    if (host == NULL) {
+        return -1;
+    }
+    struct sockaddr_in *laddr = (struct sockaddr_in *) addr;
+
+    host->localport = laddr->sin_port;
+    // host->localip = laddr->sin_addr.s_addr;
+    rte_memcpy(&host->localip, &laddr->sin_addr.s_addr, sizeof(uint32_t));
+    rte_memcpy(host->localmac, gSrcMac, RTE_ETHER_ADDR_LEN);
+    return 0;
+}
+
+ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addr_len);
+
+ssize_t
+sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len);
+
+
+int close(int sockfd) {
+    struct localhost *host = get_hostinfo_fromfd(sockfd);
+
+    if (host == NULL) {
+        return -1;
+    }
+    LL_REMOVE(host, lhost);
+
+    if (host->rcvbuf) {
+        rte_ring_free(host->rcvbuf);
+    }
+    if (host->sndbuf) {
+        rte_ring_free(host->sndbuf);
+    }
+    rte_free(host);
+    return 0;
+}
+
+
+#define UDP_APP_RECV_BUFFER_SIZE    128
+
+/**
+ * 跑 udp server 把它跑通 在现在的一个协议栈上 socket bind recvfrom sendto close 要自己实现 内核这五个函数(五个接口)
+ * 1、udp server在做的时候也是一个线程
+ * @param arg
+ * @return
+ */
+static int udp_server_entry(__attribute__((unused))  void *arg) {
+    // connfd 生命周期 socket分配一个 fd 唯一值 对应(local_ip local_port)
+    int connfd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (connfd == -1) {
+        printf("sockfd failed\n");
+        return -1;
+    }
+    struct sockaddr_in localaddr, clientaddr; // struct sockaddr
+    memset(&localaddr, 0, sizeof(struct sockaddr_in));
+
+    localaddr.sin_port = htons(8889);
+    localaddr.sin_family = AF_INET;
+    localaddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // 0.0.0.0
+    int bind_id = bind(connfd, (struct sockaddr *) &localaddr, sizeof(localaddr));
+
+    if (bind_id == -1) {
+        perror("bind failed");
+        close(connfd);
+        return -1;
+    }
+    printf("Bind successful on %s:%d\n", inet_ntoa(localaddr.sin_addr), ntohs(localaddr.sin_port));
+
+
+    char buffer[UDP_APP_RECV_BUFFER_SIZE] = {0};
+    socklen_t addrlen = sizeof(clientaddr);
+    while (1) {
+        if (recvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0,
+                     (struct sockaddr *) &clientaddr, &addrlen) < 0) {
+            continue;
+        } else {
+            printf("recv from %s:%d, data:%s\n", inet_ntoa(clientaddr.sin_addr),
+                   ntohs(clientaddr.sin_port), buffer);
+            sendto(connfd, buffer, strlen(buffer), 0,
+                   (struct sockaddr *) &clientaddr, sizeof(clientaddr));
+        }
+    }
+    close(connfd);
+    return 0;
+}
 
 /**
  * 接受数据功能
@@ -622,8 +955,16 @@ int main(int argc, char *argv[]) {
 #endif
 #if ENABLE_MULTHREAD
     // 启动多线程 暂时开一个线程 处理数据包 跟cpu绑定的 一一对应的
-    rte_eal_remote_launch(pkt_process, mbuf_pool, rte_get_next_lcore(lcore_id, 1, 0));
+    lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
+    rte_eal_remote_launch(pkt_process, mbuf_pool, lcore_id);
 #endif
+
+#if ENABLE_UDP_APP
+    // udp server 暂时开一个线程 处理数据包 跟cpu绑定的 一一对应的
+    lcore_id = rte_get_next_lcore(lcore_id, 1, 0);
+    rte_eal_remote_launch(udp_server_entry, mbuf_pool, lcore_id);
+#endif
+
     while (1) {
         // rx
         // 接受数据的时候 包的数据量最大可以写入128个
@@ -634,7 +975,9 @@ int main(int argc, char *argv[]) {
         if (num_recvd > BURST_SIZE) {
             rte_exit(EXIT_FAILURE, "Error receiving from eth\n");
         } else if (num_recvd > 0) { // 如果大于0 直接就入队了
+            // Single Producer 该函数适用于只有一个生产者进行入队操作的场景
             rte_ring_sp_enqueue_burst(ring->in, (void **) rx, num_recvd, NULL);
+            // rte_ring_mp_enqueue_burst  multi-producers 将多个对象批量入队到环形队列中
         }
         // tx
         struct rte_mbuf *tx[BURST_SIZE];
