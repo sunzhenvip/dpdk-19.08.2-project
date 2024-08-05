@@ -65,5 +65,15 @@ CFLAGS += $(WERROR_FLAGS)
 #调试信息，这样在调试时可以使用调试器对程序进行调试
 CFLAGS += -g
 
+# 添加指定的扩展库源码 可以clion IDE 提示 跳转到.c 文件源码当中(部分跳转 后续继续研究)
+#CFLAGS += -I$(RTE_SDK)/lib/librte_ethdev
+# 获取 $(RTE_SDK)/lib 目录下 所有的目录 不包含 当前 lib 本身目录
+# 判断是否设置了该环境变量 执行下面的引入代码
+ifdef ADD_DPDK_LIB_INCLUDES
+DPDK_LIB_DIRS := $(shell find $(RTE_SDK)/lib -mindepth 1 -type d)
+$(foreach dir,$(DPDK_LIB_DIRS),$(eval CFLAGS += -I$(dir)))
+endif
+
+
 include $(RTE_SDK)/mk/rte.extapp.mk
 endif
