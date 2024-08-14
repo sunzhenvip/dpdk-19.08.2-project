@@ -543,6 +543,7 @@ static struct localhost *lhost = NULL;
 struct localhost {
     int fd;
 
+    //unsigned int status; // 增加一个状态 表示阻塞和非阻塞??? 这里暂时就不实现了
     uint32_t localip; // ip --> mac
     uint8_t localmac[RTE_ETHER_ADDR_LEN];
     uint16_t localport;
@@ -554,7 +555,7 @@ struct localhost {
     // 连接数超级多的时候不建议使用链表 推荐使用 红黑树
     struct localhost *prev; // 加入链表里面
     struct localhost *next; // 为了做多个链接
-
+    // 增加一个条件变量
     pthread_cond_t cond;
     pthread_mutex_t mutex;
 
@@ -583,6 +584,13 @@ static struct localhost *get_hostinfo_fromfd(int sockfd) {
     return NULL;
 }
 
+/**
+ * 查找 host
+ * @param dip
+ * @param port
+ * @param proto
+ * @return
+ */
 static struct localhost *get_hostinfo_fromip_port(uint32_t dip, uint16_t port, uint8_t proto) {
     struct localhost *host;
     for (host = lhost; host != NULL; host = host->next) {
@@ -596,7 +604,8 @@ static struct localhost *get_hostinfo_fromip_port(uint32_t dip, uint16_t port, u
 
 // arp
 struct offload {
-
+    // 为什么没有定义mac地址 因为可以从arp中获取
+    // 一个udp数据包  包含 哪些数据
     uint32_t sip;
     uint32_t dip;
 
@@ -604,8 +613,9 @@ struct offload {
     uint16_t dport;
 
     int protocol;
-
+    // 数据
     unsigned char *data;
+    // 数据长度
     uint16_t length;
 
 };
@@ -616,25 +626,53 @@ struct offload {
  * @return
  */
 static int udp_process(struct rte_mbuf *udpmbuf) {
-    struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(udpmbuf, struct rte_ipv4_hdr *,
-                                                         sizeof(struct rte_ether_hdr));
-
+    /**
+     * push到 recv buffer
+     * 1、解析数据
+     * 2、填充offload
+     * 3、push到 recv buffer
+     */
+    struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(udpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
     // struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) (iphdr + 1);
-    // 上一行代码修正版
-    struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) ((char *) iphdr + sizeof(struct rte_ipv4_hdr));
+    // struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) ((char *) iphdr + sizeof(struct rte_ipv4_hdr));
+    // 上面注释两行写法不一样 功能一样
+    struct rte_udp_hdr *udphdr = (struct rte_udp_hdr *) (iphdr + 1);
     // if (ntohs (udphdr->src_port) != 8888) { // 做测试用的 可以后期删除
     //     continue;
     // }
-#if ENABLE_SEND //
-    rte_memcpy(gDstMac, ehdr->s_addr.addr_bytes, RTE_ETHER_ADDR_LEN);
+    // 打印测试 打印ip地址
+    struct in_addr addr;
+    addr.s_addr = iphdr->src_addr;
+    printf("udp_process ---> src: %s:%d \n", inet_ntoa(addr), ntohs(udphdr->src_port));
+    // 查找信息
+    struct localhost *host = get_hostinfo_fromip_port(iphdr->dst_addr, udphdr->dst_port, iphdr->next_proto_id);
+    if (host == NULL) { // 应该是正常的 有一些 可能是广播的数据  对应的host可能不存在 (此情况不做处理退出即可)
+        rte_pktmbuf_free(udpmbuf);
+        return -3;
+    }
+    // 构造 offload 数据
+    struct offload *ol = rte_malloc("offload", sizeof(struct offload), 0);
+    if (ol == NULL) { // return 需要清空mbuf
+        rte_pktmbuf_free(udpmbuf);
+        return -1;
+    }
+    // ip 和 端口 进行赋值
+    ol->dip = iphdr->dst_addr;
+    ol->sip = iphdr->src_addr;
+    ol->sport = udphdr->src_port;
+    ol->dport = udphdr->dst_port;
 
-    rte_memcpy(&gSrcIp, &iphdr->dst_addr, sizeof(uint32_t));
-    rte_memcpy(&gDstIp, &iphdr->src_addr, sizeof(uint32_t));
-
-    rte_memcpy(&gSrcPort, &udphdr->dst_port, sizeof(uint16_t));
-    rte_memcpy(&gDstPort, &udphdr->src_port, sizeof(uint16_t));
-#endif
-
+    ol->protocol = IPPROTO_UDP;
+    ol->length = ntohs(udphdr->dgram_len);
+    // 分配内存
+    ol->data = rte_malloc("unsigned char*", ol->length - sizeof(struct rte_udp_hdr), 0);
+    if (ol->data == NULL) { // 分配失败 释放内存
+        rte_pktmbuf_free(udpmbuf);
+        rte_free(ol);
+        return -2;
+    }
+    // 拷贝内容 udphdr(头部大小) + 1 表示 移动到 upd_payload_data首地址进行复制
+    rte_memcpy(ol->data, (unsigned char *) (udphdr + 1), ol->length - sizeof(struct rte_udp_hdr));
     // 网络字节顺什么时候转换 两个字节以上包含两个字节
     uint16_t length = ntohs(udphdr->dgram_len);
     // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
@@ -643,21 +681,17 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
 
 
-    struct in_addr addr;
-    addr.s_addr = iphdr->src_addr;
-    printf("接收方 src: %s:%d--->", inet_ntoa(addr), ntohs(udphdr->src_port));
-
     addr.s_addr = iphdr->dst_addr;
     printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port),
            upd_payload_len, (char *) (udphdr + 1));
+    // 生产者-> 某个对象的指针 插入到环形队列中。线程安全的
+    rte_ring_mp_enqueue(host->rcvbuf, ol); // push 到 recv buffer
+    // 通知其他线程 数据已经准备好
+    pthread_mutex_lock(&host->mutex);
+    pthread_cond_signal(&host->cond);
+    pthread_mutex_unlock(&host->mutex);
 
-// #if ENABLE_SEND
-//     struct rte_mbuf *txmbuf = ng_send_udp(mbuf_pool, (uint8_t *) (udphdr + 1), length);
-//     // rte_eth_tx_burst(gDpdkPortId, 0, &txmbuf, 1);
-//     // rte_pktmbuf_free(txmbuf);
-//     // 把需要发送的数据入队到 ring Buffer(线程安全的)
-//     rte_ring_mp_enqueue_burst(ring->out, (void **) &txmbuf, 1, NULL);
-// #endif
+    // enqueue --> recvbuff
     rte_pktmbuf_free(udpmbuf);
     return 0;
 }
@@ -786,6 +820,8 @@ int nsocket(__attribute__((unused)) int domain, int type, int protocol) {
     if (host == NULL) { //创建失败
         return -1;
     }
+    // 初始化 host 值 为 0
+    memset(host, 0, sizeof(struct localhost));
     host->fd = fd;
     if (type == SOCK_DGRAM) {
         host->protocol = IPPROTO_UDP;
@@ -807,6 +843,14 @@ int nsocket(__attribute__((unused)) int domain, int type, int protocol) {
         rte_free(host);
         return -1;
     }
+    // 初始化 条件变量
+    // 这里不是很明白 在这里初始化 当前函数如果执行完 这两个变量 不会回收吗？？
+    pthread_cond_t blank_cond = PTHREAD_COND_INITIALIZER;
+    rte_memcpy(&host->cond, &blank_cond, sizeof(pthread_cond_t));
+    // 初始化 条件变量
+    pthread_mutex_t blank_mutex = PTHREAD_MUTEX_INITIALIZER;
+    rte_memcpy(&host->mutex, &blank_mutex, sizeof(pthread_mutex_t));
+
     // 将新创建的host添加到链表中
     LL_ADD(host, lhost);
     return fd;
@@ -831,6 +875,35 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
     struct localhost *host = get_hostinfo_fromfd(sockfd);
     if (host == NULL) {
         return -1;
+    }
+    /**
+     * sockfd 分为阻塞和非阻塞
+     */
+    struct offload *ol = NULL;
+
+    struct sockaddr_in *saddr = (struct sockaddr_in *) src_addr;
+    // 如果非阻塞
+    int nb = -1;
+    // nb = rte_ring_mc_dequeue(host->rcvbuf, (void **) &ol);
+    // if (nb < 0) {
+    //     return -1;
+    // }
+    // 消费者 线程安全的
+    // 在这里我们实现一个阻塞的
+    pthread_mutex_lock(&host->mutex);
+    // 如果一直没有数据阻塞在这里 如果有数据就往下面走
+    while ((nb = rte_ring_mc_dequeue(host->rcvbuf, (void **) &ol)) < 0) {
+        pthread_cond_wait(&host->cond, &host->mutex);
+    }
+    pthread_mutex_unlock(&host->mutex);
+    //
+    saddr->sin_port = ol->sport;
+    rte_memcpy(&saddr->sin_addr.s_addr, &ol->sip, sizeof(uint32_t));
+    if (len < ol->length) { // 当 buf len 小于 实际 upd_payload_len 说明 数据包 大于 缓存buf
+        // 重新把这个节点再放到 recv buffer 里面
+        rte_memcpy(buf, ol->data, len);
+    } else {
+
     }
 }
 
