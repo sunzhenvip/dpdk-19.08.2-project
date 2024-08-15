@@ -1031,6 +1031,34 @@ int main(int argc, char *argv[]) {
     if (ring->out == NULL) {
         ring->out = rte_ring_create("out ring", RING_SIZE, rte_socket_id(), RING_F_SP_ENQ | RING_F_SC_DEQ);
     }
+    // enqueue 系列(入队插入操作)
+
+    // rte_ring_mp_enqueue()
+    // rte_ring_mp_enqueue_burst()
+    // rte_ring_mp_enqueue_bulk()
+
+    // rte_ring_sp_enqueue()
+    // rte_ring_sp_enqueue_burst()
+    // rte_ring_sp_enqueue_bulk()
+
+    // rte_ring_enqueue()
+    // rte_ring_enqueue_burst()
+    // rte_ring_enqueue_bulk()
+
+    // dequeue 系列(出队取出操作)
+
+    // rte_ring_mc_dequeue()
+    // rte_ring_mc_dequeue_burst()
+    // rte_ring_mc_dequeue_bulk()
+
+    // rte_ring_sc_dequeue()
+    // rte_ring_sc_dequeue_burst()
+    // rte_ring_sc_dequeue_bulk()
+
+    // rte_ring_dequeue()
+    // rte_ring_dequeue_burst()
+    // rte_ring_dequeue_bulk()
+
     // 三个入队 三个出队
     // 多个地方入队 多线程的话使用 rte_ring_mp_enqueue_burst()
     // 不是线程安全的 如果只有一个地方入队可以使用这个 rte_ring_sp_enqueue_burst()
