@@ -774,6 +774,7 @@ static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
 }
 
 
+// offload 转 mbuf
 static int udp_out(struct rte_mempool *mbuf_pool) {
     struct localhost *host;
     for (host = lhost; host != NULL; host = host->next) {
@@ -880,6 +881,7 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
      * sockfd 分为阻塞和非阻塞
      */
     struct offload *ol = NULL;
+    unsigned char *ptr = NULL;
 
     struct sockaddr_in *saddr = (struct sockaddr_in *) src_addr;
     // 如果非阻塞
@@ -902,13 +904,71 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
     if (len < ol->length) { // 当 buf len 小于 实际 upd_payload_len 说明 数据包 大于 缓存buf
         // 重新把这个节点再放到 recv buffer 里面
         rte_memcpy(buf, ol->data, len);
-    } else {
+        // 开辟内存并且赋值数据
+        ptr = rte_malloc("unsigned char *", ol->length - len, 0);
+        rte_memcpy(ptr, ol->data + len, ol->length - len);
 
+        ol->length -= len;
+        // 释放原来的重新赋值
+        rte_free(ol->data);
+        ol->data = ptr;
+
+        // 这一步是因为 udp_recv_buffer 设置了固定长度 需要反复进行读取数据
+        rte_ring_mp_enqueue(host->rcvbuf, ol);
+
+        return len;
+    } else {
+        rte_memcpy(buf, ol->data, ol->length);
+        // 释放内存
+        ssize_t length = ol->length;
+        rte_free(ol->data);
+        rte_free(ol);
+        // return ol->length; // 不能直接返回 因为前面释放了这个内存，rte_free之后对 ol->length 的访问就会变得不可预测
+        return length;
     }
 }
 
 ssize_t
-sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len);
+sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len) {
+    /**
+     * 这个地方 没必要和recvfrom一样 加 pthread_cond_wait 条件等待 很容易发生死锁
+     * 三个线程 2组 ring buffer
+     */
+    struct localhost *host = get_hostinfo_fromfd(sockfd);
+    if (host == NULL) {
+        return -1;
+    }
+
+    const struct sockaddr_in *daddr = (const struct sockaddr_in *) dest_addr;
+
+    struct offload *ol = rte_malloc("offload", sizeof(struct offload), 0);
+    if (ol == NULL) {
+        return -1;
+    }
+
+    ol->dip = daddr->sin_addr.s_addr;
+    ol->dport = daddr->sin_port;
+    ol->sip = host->localip;
+    ol->sport = host->localport;
+    ol->length = len;
+    // 打印测试
+    struct in_addr addr;
+    addr.s_addr = ol->dip;
+    printf("nsendto ---> src: %s:%d \n", inet_ntoa(addr), ntohs(ol->dport));
+
+    // 开辟内存
+    ol->data = rte_malloc("unsigned char *", len, 0);
+    if (ol->data == NULL) { // 如果失败
+        rte_free(ol);
+        return -1;
+    }
+    // 赋值数据
+    rte_memcpy(ol->data, buf, len);
+    // 入队到 发送队列中
+    rte_ring_mp_enqueue(host->sndbuf, ol);
+
+    return len;
+}
 
 
 int close(int sockfd) {
