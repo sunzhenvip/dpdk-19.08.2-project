@@ -876,7 +876,7 @@ int nsocket(__attribute__((unused)) int domain, int type, int protocol) {
 }
 
 
-int bind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) socklen_t addr_len) {
+int nbind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) socklen_t addr_len) {
     struct localhost *host = get_hostinfo_fromfd(sockfd);
     if (host == NULL) {
         return -1;
@@ -890,7 +890,7 @@ int bind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) sockle
     return 0;
 }
 
-ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addr_len) {
+ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addr_len) {
     struct localhost *host = get_hostinfo_fromfd(sockfd);
     if (host == NULL) {
         return -1;
@@ -947,7 +947,7 @@ ssize_t recvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *
 }
 
 ssize_t
-sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len) {
+nsendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len) {
     /**
      * 这个地方 没必要和recvfrom一样 加 pthread_cond_wait 条件等待 很容易发生死锁
      * 三个线程 2组 ring buffer
@@ -989,7 +989,7 @@ sendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr
 }
 
 
-int close(int sockfd) {
+int nclose(int sockfd) {
     struct localhost *host = get_hostinfo_fromfd(sockfd);
 
     if (host == NULL) {
@@ -1029,7 +1029,7 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
     localaddr.sin_port = htons(8889);
     localaddr.sin_family = AF_INET;
     localaddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // 0.0.0.0
-    int bind_id = bind(connfd, (struct sockaddr *) &localaddr, sizeof(localaddr));
+    int bind_id = nbind(connfd, (struct sockaddr *) &localaddr, sizeof(localaddr));
 
     if (bind_id == -1) {
         perror("bind failed");
@@ -1042,17 +1042,17 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
     char buffer[UDP_APP_RECV_BUFFER_SIZE] = {0};
     socklen_t addrlen = sizeof(clientaddr);
     while (1) {
-        if (recvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0,
+        if (nrecvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0,
                      (struct sockaddr *) &clientaddr, &addrlen) < 0) {
             continue;
         } else {
             printf("recv from %s:%d, data:%s\n", inet_ntoa(clientaddr.sin_addr),
                    ntohs(clientaddr.sin_port), buffer);
-            sendto(connfd, buffer, strlen(buffer), 0,
+            nsendto(connfd, buffer, strlen(buffer), 0,
                    (struct sockaddr *) &clientaddr, sizeof(clientaddr));
         }
     }
-    close(connfd);
+    nclose(connfd);
     return 0;
 }
 
