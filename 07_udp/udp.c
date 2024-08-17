@@ -3,11 +3,12 @@
 #include <rte_eal.h>
 #include <rte_ethdev.h>
 #include <rte_mbuf.h>
+#include <rte_malloc.h>
+#include <rte_timer.h>
 
 #include <stdio.h>
-#include <unistd.h>
 #include <arpa/inet.h>
-#include <rte_timer.h>
+#include <unistd.h>
 
 #include "arp.h"
 
@@ -61,6 +62,7 @@ struct inout_ring {
     struct rte_ring *in;
     struct rte_ring *out;
 };
+
 struct inout_ring *rInst = NULL;
 
 // 初始化 ring Buffer 单例
@@ -84,11 +86,14 @@ static int udp_out(struct rte_mempool *mbuf_pool);
 
 // 定义一个端口的id表示的是 绑定的网卡id
 int gDpdkPortId = 0;
+
+
 // 设置端口配置信息
 static const struct rte_eth_conf port_conf_default = {
         .rxmode = {.max_rx_pkt_len = RTE_ETHER_MAX_LEN}
 };
 
+// 初始化获取网卡网口驱动信息
 static void ng_init_port(struct rte_mempool *mbuf_pool) {
     // 检测端口是否可用 dpdk 绑定了多少个网卡 这里应该是多少个
     uint16_t nb_sys_ports = rte_eth_dev_count_avail();
@@ -132,6 +137,8 @@ static void ng_init_port(struct rte_mempool *mbuf_pool) {
 
 }
 
+
+// 构造udp发送所需要的数据包结构化的内容
 static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_len) {
     // dpdp从最开始就创建了一个内存池
     // encode 打包成udp的包
@@ -219,6 +226,7 @@ static struct rte_mbuf *ng_send_udp(struct rte_mempool *mbuf_pool, uint8_t *data
 
 #if ENABLE_ARP
 
+// 构造arp协议发送所需要的数据包结构化的内容
 static int ng_encode_arp_pkt(uint8_t *msg, uint16_t opcode, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
     // 1 ethhdr
     struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
@@ -252,13 +260,14 @@ static int ng_encode_arp_pkt(uint8_t *msg, uint16_t opcode, uint8_t *dst_mac, ui
 static struct rte_mbuf *
 ng_send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_t *dst_mac, uint32_t sip, uint32_t dip) {
     const unsigned total_length = sizeof(struct rte_ether_hdr) + sizeof(struct rte_arp_hdr);
+    // mempool --> mbuf 从内存池中获取一个mbuf ,使用内存池最小的单位是 mbuf
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
         rte_exit(EXIT_FAILURE, "ng_send_arp rte_pktmbuf_alloc 分配内存失败\n");
     }
     mbuf->pkt_len = total_length;
     mbuf->data_len = total_length;
-
+    // 从mbuf里面把对应的数据 请注意mbuf是一个结构体 这个结构体和具体存储的数据是分离的 需要拿到存储数据具体的位置
     uint8_t * pkt_data = rte_pktmbuf_mtod(mbuf, uint8_t *);
     ng_encode_arp_pkt(pkt_data, opcode, dst_mac, sip, dip);
     return mbuf;
@@ -285,6 +294,8 @@ static uint16_t ng_checksum(uint16_t *addr, int count) {
     return ~sum;
 }
 
+
+// 构造icmp协议发送所需要的数据包结构化的内容
 static int ng_encode_icmp_pkt(uint8_t *msg, uint8_t *dst_mac,
                               uint32_t sip, uint32_t dip, uint16_t id, uint16_t seqnb) {
     // 1 ether
@@ -316,7 +327,7 @@ static int ng_encode_icmp_pkt(uint8_t *msg, uint8_t *dst_mac,
     icmp->icmp_ident = id;
     icmp->icmp_seq_nb = seqnb;
 
-    icmp->icmp_cksum = 0;
+    icmp->icmp_cksum = 0; // 先初始化 因为 ng_checksum函数 会用到icmp_cksum
     icmp->icmp_cksum = ng_checksum((uint16_t *) icmp, sizeof(struct rte_icmp_hdr));
     return 0;
 }
@@ -346,7 +357,7 @@ static struct rte_mbuf *ng_send_icmp(
 
 #endif
 
-
+// 打印mac地址字符串形式函数
 static void print_ethaddr(const char *name, const struct rte_ether_addr *eth_addr) {
     char buf[RTE_ETHER_ADDR_FMT_SIZE];
     rte_ether_format_addr(buf, RTE_ETHER_ADDR_FMT_SIZE, eth_addr);
@@ -495,12 +506,12 @@ static int pkt_process(void *arg) {
             if (ehdr->ether_type != rte_cpu_to_be_16(RTE_ETHER_TYPE_IPV4)) {
                 continue;
             }
-
+            // 获取ip头 转化为 结构体数据
             struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr *,
                                                                  sizeof(struct rte_ether_hdr));
-
+            // 判断是否是udp协议
             if (iphdr->next_proto_id == IPPROTO_UDP) {
-
+                // 处理udp协议数据
                 udp_process(mbufs[i]);
             }
 
@@ -530,12 +541,17 @@ static int pkt_process(void *arg) {
             }
 #endif
         }
+#if ENABLE_UDP_APP
+        // 为什么不写在for循环里面???
+        udp_out(mbuf_pool);
+#endif
     }
     return 0;
 }
 
 #endif
 
+#if ENABLE_UDP_APP
 
 static struct localhost *lhost = NULL;
 
@@ -1039,6 +1055,9 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
     close(connfd);
     return 0;
 }
+
+#endif
+
 
 /**
  * 接受数据功能
