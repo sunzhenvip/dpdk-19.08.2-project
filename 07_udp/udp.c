@@ -831,7 +831,7 @@ static int udp_out(struct rte_mempool *mbuf_pool) {
  * @param protocol
  * @return
  */
-int nsocket(__attribute__((unused)) int domain, int type, int protocol) {
+static int nsocket(__attribute__((unused)) int domain, int type, __attribute__((unused)) int protocol) {
     // bit map
     int fd = get_fd_frombitmap(); //分配一个可用的fd
     // struct localhost *host = (struct localhost *) malloc(sizeof(struct localhost));
@@ -876,12 +876,12 @@ int nsocket(__attribute__((unused)) int domain, int type, int protocol) {
 }
 
 
-int nbind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) socklen_t addr_len) {
+static int nbind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) socklen_t addr_len) {
     struct localhost *host = get_hostinfo_fromfd(sockfd);
     if (host == NULL) {
         return -1;
     }
-    struct sockaddr_in *laddr = (struct sockaddr_in *) addr;
+    const struct sockaddr_in *laddr = (const struct sockaddr_in *) addr;
 
     host->localport = laddr->sin_port;
     // host->localip = laddr->sin_addr.s_addr;
@@ -890,7 +890,8 @@ int nbind(int sockfd, const struct sockaddr *addr, __attribute__((unused)) sockl
     return 0;
 }
 
-ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr *src_addr, socklen_t *addr_len) {
+static ssize_t nrecvfrom(int sockfd, void *buf, size_t len, __attribute__((unused)) int flags,
+                         struct sockaddr *src_addr, __attribute__((unused)) socklen_t *addr_len) {
     struct localhost *host = get_hostinfo_fromfd(sockfd);
     if (host == NULL) {
         return -1;
@@ -946,8 +947,9 @@ ssize_t nrecvfrom(int sockfd, void *buf, size_t len, int flags, struct sockaddr 
     }
 }
 
-ssize_t
-nsendto(int sockfd, const void *buf, size_t len, int flags, const struct sockaddr *dest_addr, socklen_t addr_len) {
+static ssize_t
+nsendto(int sockfd, const void *buf, size_t len, __attribute__((unused)) int flags,
+        const struct sockaddr *dest_addr, __attribute__((unused)) socklen_t addr_len) {
     /**
      * 这个地方 没必要和recvfrom一样 加 pthread_cond_wait 条件等待 很容易发生死锁
      * 三个线程 2组 ring buffer
@@ -989,7 +991,7 @@ nsendto(int sockfd, const void *buf, size_t len, int flags, const struct sockadd
 }
 
 
-int nclose(int sockfd) {
+static int nclose(int sockfd) {
     struct localhost *host = get_hostinfo_fromfd(sockfd);
 
     if (host == NULL) {
@@ -1043,13 +1045,13 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
     socklen_t addrlen = sizeof(clientaddr);
     while (1) {
         if (nrecvfrom(connfd, buffer, UDP_APP_RECV_BUFFER_SIZE, 0,
-                     (struct sockaddr *) &clientaddr, &addrlen) < 0) {
+                      (struct sockaddr *) &clientaddr, &addrlen) < 0) {
             continue;
         } else {
             printf("recv from %s:%d, data:%s\n", inet_ntoa(clientaddr.sin_addr),
                    ntohs(clientaddr.sin_port), buffer);
             nsendto(connfd, buffer, strlen(buffer), 0,
-                   (struct sockaddr *) &clientaddr, sizeof(clientaddr));
+                    (struct sockaddr *) &clientaddr, sizeof(clientaddr));
         }
     }
     nclose(connfd);
