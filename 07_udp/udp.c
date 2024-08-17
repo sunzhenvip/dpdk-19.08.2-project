@@ -775,6 +775,7 @@ static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
 
 
 // offload 转 mbuf
+// mempool --> mbuf 从内存池中获取一个mbuf ,使用mempool内存池最小的单位是 mbuf
 static int udp_out(struct rte_mempool *mbuf_pool) {
     struct localhost *host;
     for (host = lhost; host != NULL; host = host->next) {
