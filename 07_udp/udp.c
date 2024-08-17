@@ -778,6 +778,7 @@ static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
 // mempool --> mbuf 从内存池中获取一个mbuf ,使用mempool内存池最小的单位是 mbuf
 static int udp_out(struct rte_mempool *mbuf_pool) {
     struct localhost *host;
+    // 需要遍历所有的host 取出 send buf 需要发送的数据
     for (host = lhost; host != NULL; host = host->next) {
         struct offload *ol;
         // consumer 多线程消费者安全模式下 从环形队列中出队单个对象
