@@ -805,6 +805,11 @@ static int udp_out(struct rte_mempool *mbuf_pool) {
         if (nb_snd < 0) {
             continue;
         }
+        // 调试信息
+        struct in_addr addr;
+        addr.s_addr = ol->dip;
+        printf("udp_out ---> src: %s:%d \n", inet_ntoa(addr), ntohs(ol->dport));
+
         uint8_t * dstmac = ng_get_dst_macaddr(ol->dip);
         if (dstmac == NULL) { // 没有的话 需要发一次arp数据包过去
             struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, ol->sip, ol->dip);
@@ -1032,7 +1037,7 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 
     localaddr.sin_port = htons(8889);
     localaddr.sin_family = AF_INET;
-    localaddr.sin_addr.s_addr = inet_addr("0.0.0.0"); // 0.0.0.0
+    localaddr.sin_addr.s_addr = inet_addr("192.168.79.201"); // todo 0.0.0.0
     int bind_id = nbind(connfd, (struct sockaddr *) &localaddr, sizeof(localaddr));
 
     if (bind_id == -1) {
