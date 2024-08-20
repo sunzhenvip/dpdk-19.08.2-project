@@ -405,6 +405,8 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
         // rte_eth_tx_burst(gDpdkPortId, 0, &arpbuf, 1);
         // rte_pktmbuf_free(arpbuf);
         // 把需要发送的数据入队到 ring Buffer(线程安全的)
+        // 缓冲区中存储的是 arpbuf 指向的 rte_mbuf 的地址，而不是 arpbuf 变量本身。
+        // arpbuf 变量被回收，rte_mbuf 结构体本身依然存在于内存中，消费者可以从环形缓冲区中正常取出并使用这个结构体。
         rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
     }
 }
