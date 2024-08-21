@@ -506,9 +506,16 @@ static int pkt_process(void *arg) {
                 // 网络字节顺什么时候转换 两个字节以上包含两个字节
                 uint16_t length = ntohs(udphdr->dgram_len);
                 // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
+                // 在处理网络传输的数据时，如果将负载数据的最后一个字节修改为 \0，
+                // 而这个字节在原始数据中如果是有意义的，那么这样修改可能会导致应用程序接收到的实际数据被截断或失真，影响正常的业务逻辑。
                 *((char *) udphdr + length) = '\0';
 
                 uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
+                // 可以使用临时 变量 不修改原始数据
+                // char temp_buffer[upd_payload_len + 1]; // +1是为了存储终止符
+                // char *payload = (char *)(udphdr + 1);
+                // memcpy(temp_buffer, payload, upd_payload_len);
+                // temp_buffer[upd_payload_len] = '\0'; // 在复制的缓冲区中添加终止符 然后打印该变量
 
 
                 struct in_addr addr;
