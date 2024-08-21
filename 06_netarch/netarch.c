@@ -504,6 +504,7 @@ static int pkt_process(void *arg) {
 #endif
 
                 // 网络字节顺什么时候转换 两个字节以上包含两个字节
+                // 测试工具 length = 40 包含udp header
                 uint16_t length = ntohs(udphdr->dgram_len);
                 // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
                 // 在处理网络传输的数据时，如果将负载数据的最后一个字节修改为 \0，
