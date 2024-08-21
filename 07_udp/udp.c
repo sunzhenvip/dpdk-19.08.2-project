@@ -783,6 +783,7 @@ static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
     // 没有减8看情况应该是一个bug
     // 42(以太网头大小+IPV4头大小+UDP头大小)
     const unsigned total_len = 42 + length - 8; // 可能需要减8(length包含了UDP头大小)
+    // todo 这里 -8 去掉 就可以正常回显数据了 但是 06_netarch 就不需要 还需要排查为什么
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
         rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
