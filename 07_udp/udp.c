@@ -681,7 +681,7 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     ol->dport = udphdr->dst_port;
 
     ol->protocol = IPPROTO_UDP;
-    ol->length = ntohs(udphdr->dgram_len);
+    ol->length = ntohs(udphdr->dgram_len); // todo 是否应该减掉首部长度 - sizeof(struct rte_udp_hdr);
     // 分配内存
     ol->data = rte_malloc("unsigned char*", ol->length - sizeof(struct rte_udp_hdr), 0);
     if (ol->data == NULL) { // 分配失败 释放内存
@@ -694,14 +694,18 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     // 网络字节顺什么时候转换 两个字节以上包含两个字节
     uint16_t length = ntohs(udphdr->dgram_len);
     // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
-    *((char *) udphdr + length) = '\0';
+    // *((char *) udphdr + length) = '\0'; 此行存在问题
 
+    // 不修改原始数据 创建临时打印测试
     uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
+    char temp_buffer[upd_payload_len + 1]; // +1是为了存储终止符
+    char *payload = (char *)(udphdr + 1);
+    memcpy(temp_buffer, payload, upd_payload_len);
+    temp_buffer[upd_payload_len] = '\0'; // 在复制的缓冲区中添加终止符 然后打印该变量
 
 
     addr.s_addr = iphdr->dst_addr;
-    printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port),
-           upd_payload_len, (char *) (udphdr + 1));
+    printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port), upd_payload_len, (char *) (udphdr + 1));
     // 生产者-> 某个对象的指针 插入到环形队列中。线程安全的
     rte_ring_mp_enqueue(host->rcvbuf, ol); // push 到 recv buffer
     // 通知其他线程 数据已经准备好
@@ -944,7 +948,7 @@ static ssize_t nrecvfrom(int sockfd, void *buf, size_t len, __attribute__((unuse
 
         return len;
     } else {
-        rte_memcpy(buf, ol->data, ol->length);
+        rte_memcpy(buf, ol->data, ol->length); // todo 可能有问题 目前 length 包含 udp header
         // 释放内存
         ssize_t length = ol->length;
         rte_free(ol->data);
