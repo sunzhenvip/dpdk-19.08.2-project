@@ -191,6 +191,8 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
     return 0;
 }
 
+// 暂时没有使用到该函数 增加  __attribute__((unused)) 消除编译警告
+static struct rte_mbuf *ng_send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) __attribute__((unused));
 /**
  * 该方法组装一个udp需要多大的数据空间
  * @param mbuf_pool
@@ -691,6 +693,9 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     }
     // 拷贝内容 udphdr(头部大小) + 1 表示 移动到 upd_payload_data首地址进行复制
     rte_memcpy(ol->data, (unsigned char *) (udphdr + 1), ol->length - sizeof(struct rte_udp_hdr));
+    // 之前没有把 udp header 头长度减去有问题
+    // 修改数据长度 减去udphdr的大小
+    ol->length =  ol->length - sizeof(struct rte_udp_hdr);
     // 网络字节顺什么时候转换 两个字节以上包含两个字节
     uint16_t length = ntohs(udphdr->dgram_len);
     // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
@@ -783,7 +788,8 @@ static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
     // 没有减8看情况应该是一个bug
     // 42(以太网头大小+IPV4头大小+UDP头大小)
     // length 此时是32 还不确定原因
-    const unsigned total_len = 42 + length - 8; // 可能需要减8(length包含了UDP头大小)
+    // 此时该 length 是 udp_payload_len 有效负载长度
+    const unsigned total_len = 42 + length; // 可能需要减8(length包含了UDP头大小)
     // todo 这里 -8 去掉 就可以正常回显数据了 但是 06_netarch 就不需要 还需要排查为什么
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
