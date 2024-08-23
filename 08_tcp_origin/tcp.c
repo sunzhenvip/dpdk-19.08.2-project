@@ -1316,7 +1316,8 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
             break;
 
         case NG_TCP_STATUS_ESTABLISHED: // server | client
-
+            ; // 表示是空语句 也能绕过限制 或者使用{} 包裹在一起 更推荐使用{}把需要执行的代码包裹
+            // switch语句的每个case标签应该直接跟随一个语句，而不是一个变量声明
             uint8_t hdrlen = tcphdr->data_off & 0xF0;
             hdrlen >= 4;
             uint8_t *payload = (uint8_t *)(tcphdr + 1) + hdrlen * 4;
