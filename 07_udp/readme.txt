@@ -24,3 +24,13 @@ netarch.c文件中 MAKE_IPV4_ADDR 方法修改成自己的实际IP地址
 
 1.不用offload，用rte mbufs来实现，udp 接口 如何实现？
 2.sockfd如何做非阻塞。 如何实现？
+
+
+udp 自定义的两个结构体 用于组织udp数据发送用的
+    localhost 会话链表 查找 对应那个链接
+    offload udp的数据结构
+
+
+
+
+tcp 每次创建的链接
