@@ -531,6 +531,12 @@ static int pkt_process(void *arg) {
                 udp_process(mbufs[i]);
             }
 
+#if ENABLE_TCP_APP
+            if (iphdr->next_proto_id == IPPROTO_TCP) {
+                ng_tcp_process(mbufs[i]);
+            }
+#endif
+
 #if ENABLE_ICMP
             if (iphdr->next_proto_id == IPPROTO_ICMP) {
                 struct rte_icmp_hdr *icmphdr = (struct rte_icmp_hdr *) (iphdr + 1);
@@ -1093,7 +1099,24 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 #if ENABLE_TCP_APP
 
 static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
+    struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(tcpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
+    struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *) (iphdr + 1);
 
+    // checksum校验值处理
+    uint16_t tcp_cksum = tcphdr->cksum;
+    tcphdr->cksum = 0; // 初始化数据
+
+    uint16_t cksum = rte_ipv4_udptcp_cksum(iphdr, tcphdr);
+
+#if 1
+    if (cksum != tcp_cksum) { // cksum 程序进行校验值 tcp_cksum 发送过来的数据包值
+        printf("cksum: %x, tcp cksum: %x\\n", cksum, tcp_cksum);
+        return -1;
+    }
+#endif
+
+
+    return 0;
 }
 
 #endif
