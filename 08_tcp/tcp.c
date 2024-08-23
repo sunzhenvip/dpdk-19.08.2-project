@@ -25,6 +25,8 @@
 #define ENABLE_MULTHREAD   1
 // upd server 服务开关
 #define ENABLE_UDP_APP     1
+// tcp Server 服务开关
+#define ENABLE_TCP_APP       1
 
 
 #define NUM_MBUFS (4096-1)
@@ -81,6 +83,15 @@ static struct inout_ring *ringInstance(void) {
 static int udp_process(struct rte_mbuf *udpmbuf);
 
 static int udp_out(struct rte_mempool *mbuf_pool);
+
+#endif
+
+
+#if ENABLE_TCP_APP
+
+static int ng_tcp_process(struct rte_mbuf *tcpmbuf);
+
+static int ng_tcp_out(struct rte_mempool *mbuf_pool);
 
 #endif
 
@@ -192,7 +203,8 @@ static int ng_encode_udp_pkt(uint8_t *msg, unsigned char *data, uint16_t total_l
 }
 
 // 暂时没有使用到该函数 增加  __attribute__((unused)) 消除编译警告
-static struct rte_mbuf *ng_send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) __attribute__((unused));
+static struct rte_mbuf *
+ng_send_udp(struct rte_mempool *mbuf_pool, uint8_t *data, uint16_t length) __attribute__((unused));
 /**
  * 该方法组装一个udp需要多大的数据空间
  * @param mbuf_pool
@@ -695,7 +707,7 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     rte_memcpy(ol->data, (unsigned char *) (udphdr + 1), ol->length - sizeof(struct rte_udp_hdr));
     // 之前没有把 udp header 头长度减去有问题
     // 修改数据长度 减去udphdr的大小
-    ol->length =  ol->length - sizeof(struct rte_udp_hdr);
+    ol->length = ol->length - sizeof(struct rte_udp_hdr);
     // 网络字节顺什么时候转换 两个字节以上包含两个字节
     uint16_t length = ntohs(udphdr->dgram_len);
     // 这行代码将 udphdr 转换为 char * 类型的指针，并偏移 length 字节，然后将该位置的值设置为空字符 '\0'。这通常用于标记UDP数据报的结束。
@@ -704,13 +716,14 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     // 不修改原始数据 创建临时打印测试
     uint16_t upd_payload_len = length - sizeof(struct rte_udp_hdr);
     char temp_buffer[upd_payload_len + 1]; // +1是为了存储终止符
-    char *payload = (char *)(udphdr + 1);
+    char *payload = (char *) (udphdr + 1);
     memcpy(temp_buffer, payload, upd_payload_len);
     temp_buffer[upd_payload_len] = '\0'; // 在复制的缓冲区中添加终止符 然后打印该变量
 
 
     addr.s_addr = iphdr->dst_addr;
-    printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port), upd_payload_len, (char *) (udphdr + 1));
+    printf("dst: %s:%d, upd_payload_len=%d,upd_payload_data=%s\n", inet_ntoa(addr), ntohs(udphdr->dst_port),
+           upd_payload_len, (char *) (udphdr + 1));
     // 生产者-> 某个对象的指针 插入到环形队列中。线程安全的
     rte_ring_mp_enqueue(host->rcvbuf, ol); // push 到 recv buffer
     // 通知其他线程 数据已经准备好
@@ -1076,6 +1089,14 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 
 #endif
 
+
+#if ENABLE_TCP_APP
+
+static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
+
+}
+
+#endif
 
 /**
  * 接受数据功能
