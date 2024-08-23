@@ -784,12 +784,9 @@ static struct rte_mbuf *ng_udp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
     // mempool --> mbuf 从内存池中获取一个mbuf ,使用内存池最小的单位是 mbuf
     // 从 内存池一次性拿多少数据出来
     // 14(以太网头大小) + 20(IPV4头大小) + 8(UDP头大小) + (剩余应用层数据大小.....)
-    // const static
-    // 没有减8看情况应该是一个bug
     // 42(以太网头大小+IPV4头大小+UDP头大小)
-    // length 此时是32 还不确定原因
     // 此时该 length 是 udp_payload_len 有效负载长度
-    const unsigned total_len = 42 + length; // 可能需要减8(length包含了UDP头大小)
+    const unsigned total_len = 42 + length;
     // todo 这里 -8 去掉 就可以正常回显数据了 但是 06_netarch 就不需要 还需要排查为什么
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
