@@ -1099,6 +1099,9 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 #if ENABLE_TCP_APP // ngtcp
 
 #define TCP_OPTION_LENGTH    10
+// 实际是 2的32次方 减1 得到的值(四个字节最大的值)
+#define TCP_MAX_SEQ          4294967295
+#define TCP_INITIAL_WINDOW   14600
 
 // tcp 状态 状态机 可以使用一个状态一个回调函数
 typedef enum _NG_TCP_STATUS {
@@ -1199,8 +1202,38 @@ static struct ng_tcp_stream *ng_tcp_stream_search(uint32_t sip, uint32_t dip, ui
 
 
 static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) {
-    struct ng_tcp_stream *test; // 先假定
-    return test;
+    // tcp => status
+    struct ng_tcp_stream *stream = rte_malloc("ng_tcp_stream", sizeof(struct ng_tcp_stream), 0);
+    if (stream == NULL) {
+        return NULL;
+    }
+    // 规整数据
+    stream->sip = sip;
+    stream->dip = dip;
+    stream->sport = sport;
+    stream->dport = dport;
+    stream->proto = IPPROTO_TCP;
+
+    // 更改状态
+    stream->status = NG_TCP_STATUS_LISTEN; // 客户端 发送到 服务端 ，服务端接受到 应该是 LISTEN 状态
+    // 客户端初始化的时候是一个 close 状态
+
+    // 初始化接收发送队列
+    stream->sndbuf = rte_ring_create("sndbuf", RING_SIZE, rte_socket_id(), 0);
+    stream->rcvbuf = rte_ring_create("rcvbuf", RING_SIZE, rte_socket_id(), 0);
+
+    // seq number
+    // 他是一个随机值
+    uint32_t next_seed = time(NULL);
+    // 生成一个seq 随机值
+    stream->snd_nxt = rand_r(&next_seed) % TCP_MAX_SEQ;
+    // 获取本机mac地址
+    rte_memcpy(stream->localmac, gSrcMac, RTE_ETHER_ADDR_LEN);
+
+    struct ng_tcp_table *table = tcpInstance();
+    LL_ADD(stream, table->tcb_set);
+
+    return stream;
 }
 
 
@@ -1232,28 +1265,31 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     }
     // tcp 状态迁移图  TCP 状态转换图 TCP 11个状态
     // 状态存在 tcp stream 里面
+    // 区分一下 哪些状态在 客户端实现的 哪些状态在 服务端实现的
+    // 谁先发 close 谁先断开
+    // 目前的流程先是这样的
     switch (stream->status) {
-        case NG_TCP_STATUS_CLOSED: // client  该状态不用处理了
+        case NG_TCP_STATUS_CLOSED: // client  客户端才会有
             break;
         case NG_TCP_STATUS_LISTEN: // server
             break;
-        case NG_TCP_STATUS_SYN_RCVD:
+        case NG_TCP_STATUS_SYN_RCVD: // server
             break;
-        case NG_TCP_STATUS_SYN_SENT:
+        case NG_TCP_STATUS_SYN_SENT: // client
             break;
-        case NG_TCP_STATUS_ESTABLISHED:
+        case NG_TCP_STATUS_ESTABLISHED: // client || server
             break;
-        case NG_TCP_STATUS_FIN_WAIT_1:
+        case NG_TCP_STATUS_FIN_WAIT_1: //  目前写的代码 我作为server 是被动关闭放   暂时认为是 只有 ~(约等于)client 发 close
             break;
-        case NG_TCP_STATUS_FIN_WAIT_2:
+        case NG_TCP_STATUS_FIN_WAIT_2: //  目前写的代码 我作为server 是被动关闭放   暂时认为是 只有 ~(约等于)client 发 close
             break;
-        case NG_TCP_STATUS_CLOSING:
+        case NG_TCP_STATUS_CLOSING: //  ~ client
             break;
-        case NG_TCP_STATUS_TIME_WAIT:
+        case NG_TCP_STATUS_TIME_WAIT: //  ~ client
             break;
-        case NG_TCP_STATUS_CLOSE_WAIT:
+        case NG_TCP_STATUS_CLOSE_WAIT:  // ~server
             break;
-        case NG_TCP_STATUS_LAST_ACK:
+        case NG_TCP_STATUS_LAST_ACK:  // ~server
             break;
     }
     return 0;
