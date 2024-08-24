@@ -1287,6 +1287,9 @@ static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr
     return 0;
 }
 
+static int ng_tcp_handle_syn_rcvd(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr) {
+    return 0;
+}
 
 static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(tcpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
@@ -1326,6 +1329,7 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
             ng_tcp_handle_listen(stream, tcphdr);
             break;
         case NG_TCP_STATUS_SYN_RCVD: // server
+            ng_tcp_handle_syn_rcvd(stream, tcphdr);
             break;
         case NG_TCP_STATUS_SYN_SENT: // client
             break;
