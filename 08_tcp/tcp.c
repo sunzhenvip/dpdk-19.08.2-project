@@ -1237,6 +1237,39 @@ static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, ui
 }
 
 static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr) {
+    if (tcphdr->tcp_flags & RTE_TCP_SYN_FLAG) { // 如果是 syn 包 才处理
+        // 有可能重复发  如何去避免 在状态机里面处理一个
+        if (stream->status == NG_TCP_STATUS_LISTEN) { // 这一行暂时还没明白？？？
+            struct ng_tcp_fragment *fragment = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
+            if (fragment == NULL) {
+                return -1;
+            }
+            // 初始化值
+            memset(fragment, 0, sizeof(struct ng_tcp_fragment));
+            // 打印测试
+            // src_ip
+            struct in_addr addr;
+            addr.s_addr = stream->sip;
+            printf("tcp ---> src: %s:%d", inet_ntoa(addr), ntohs(tcphdr->src_port));
+            // dst_ip
+            addr.s_addr = stream->dip;
+            printf("  ---> dst: %s:%d \n", inet_ntoa(addr), ntohs(tcphdr->dst_port));
+
+            fragment->seqnum = stream->snd_nxt;
+            fragment->acknum = ntohl(tcphdr->sent_seq) + 1;
+
+            fragment->tcp_flags = (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG);
+            fragment->windows = TCP_INITIAL_WINDOW;
+            fragment->hdrlen_off = 0x50;
+
+            fragment->data = NULL;
+            fragment->length = 0;
+
+            rte_ring_mp_enqueue(stream->sndbuf, fragment);
+
+            stream->status = NG_TCP_STATUS_SYN_RCVD;
+        }
+    }
     return 0;
 }
 
