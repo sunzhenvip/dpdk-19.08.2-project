@@ -1236,6 +1236,10 @@ static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, ui
     return stream;
 }
 
+static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr) {
+    return 0;
+}
+
 
 static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(tcpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
@@ -1272,6 +1276,7 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
         case NG_TCP_STATUS_CLOSED: // client  客户端才会有
             break;
         case NG_TCP_STATUS_LISTEN: // server
+            ng_tcp_handle_listen(stream, tcphdr);
             break;
         case NG_TCP_STATUS_SYN_RCVD: // server
             break;
