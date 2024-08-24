@@ -567,6 +567,12 @@ static int pkt_process(void *arg) {
         // 为什么不写在for循环里面???
         udp_out(mbuf_pool);
 #endif
+
+#if ENABLE_TCP_APP
+
+        ng_tcp_out(mbuf_pool);
+
+#endif
     }
     return 0;
 }
@@ -1208,8 +1214,8 @@ static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, ui
         return NULL;
     }
     // 规整数据
-    stream->sip = sip;
-    stream->dip = dip;
+    stream->sip = sip; // 在当前 环境下 sip是客户端ip
+    stream->dip = dip; // 在当前 环境下 服务端是客户端ip
     stream->sport = sport;
     stream->dport = dport;
     stream->proto = IPPROTO_TCP;
@@ -1340,6 +1346,49 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     }
     return 0;
 }
+
+static struct rte_mbuf *ng_tcp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, uint32_t dip,
+                                   uint8_t *srcmac, uint8_t *dstmac, struct ng_tcp_fragment *fragment) {
+    return NULL;;
+}
+
+
+// 后期 能不能 考虑  tcp_out 和 udp_out 能不能合并到一起呢？？？
+// struct localhost 和 struct tcp_stream 合并一起？？？
+// 和 udp_out 套路一样
+static int ng_tcp_out(struct rte_mempool *mbuf_pool) {
+
+    struct ng_tcp_table *table = tcpInstance();
+
+    struct ng_tcp_stream *stream;
+    for (stream = table->tcb_set; stream != NULL; stream = stream->next) {
+        struct ng_tcp_fragment *fragment = NULL;
+        int nb_snd = rte_ring_mc_dequeue(stream->sndbuf, (void **) &fragment);
+        if (nb_snd < 0) {
+            continue;
+        }
+        uint8_t * dstmac = ng_get_dst_macaddr(stream->sip); // 客户端IP
+        if (dstmac == NULL) {
+            struct rte_mbuf *arpbuf = ng_send_arp(
+                    mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, stream->dip, stream->sip);
+
+
+            struct inout_ring *ring = ringInstance();
+            rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
+            rte_ring_mp_enqueue(stream->sndbuf, fragment);
+        } else {
+            struct rte_mbuf *tcpbuf = ng_tcp_pkt(mbuf_pool, stream->dip, stream->sip,
+                                                 stream->localmac, dstmac, fragment);
+            struct inout_ring *ring = ringInstance();
+            rte_ring_mp_enqueue_burst(ring->out, (void **) &tcpbuf, 1, NULL);
+
+            rte_free(fragment);
+
+        }
+    }
+    return 0;
+}
+
 
 #endif
 
