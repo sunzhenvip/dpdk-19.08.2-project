@@ -1100,6 +1100,7 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 
 #define TCP_OPTION_LENGTH    10
 
+// tcp 状态 状态机 可以使用一个状态一个回调函数
 typedef enum _NG_TCP_STATUS {
 
     NG_TCP_STATUS_CLOSED = 0,
@@ -1146,6 +1147,13 @@ struct ng_tcp_stream { // tcp control block
 
 };
 
+
+struct ng_tcp_table {
+    int count; // 表示当前有多少个连接
+    struct ng_tcp_stream *tcb_set;
+};
+
+
 // tcp数据包 结构体
 struct ng_tcp_fragment { // tcp fragment 碎片 分片
     // tcp header 部分
@@ -1167,6 +1175,35 @@ struct ng_tcp_fragment { // tcp fragment 碎片 分片
     int length;
 };
 
+struct ng_tcp_table *tInst = NULL;
+
+static struct ng_tcp_table *tcpInstance(void) {
+    if (tInst == NULL) {
+        tInst = rte_malloc("ng_tcp_table", sizeof(struct ng_tcp_table), 0);
+        memset(tInst, 0, sizeof(struct ng_tcp_table));
+    }
+    return tInst;
+}
+
+static struct ng_tcp_stream *ng_tcp_stream_search(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) {
+    struct ng_tcp_table *table = tcpInstance();
+    // 查 遍历 链表
+    struct ng_tcp_stream *iter;
+    for (iter = table->tcb_set; iter != NULL; iter = iter->next) {
+        if (iter->sip == sip && iter->dip == dip && iter->sport == sport && iter->dport == dport) {
+            return iter;
+        }
+    }
+    return iter;
+}
+
+
+static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) {
+    struct ng_tcp_stream *test; // 先假定
+    return test;
+}
+
+
 static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(tcpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
     struct rte_tcp_hdr *tcphdr = (struct rte_tcp_hdr *) (iphdr + 1);
@@ -1183,8 +1220,42 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
         return -1;
     }
 #endif
-
-
+    //  查找 流表 是否有 对应的 流
+    struct ng_tcp_stream *stream = ng_tcp_stream_search(
+            iphdr->src_addr, iphdr->dst_addr, tcphdr->src_port, tcphdr->dst_port);
+    if (stream == NULL) { // 第一次 接收 如果没有查找到 则需要创建
+        stream = ng_tcp_stream_create(iphdr->src_addr, iphdr->dst_addr, tcphdr->src_port, tcphdr->dst_port);
+        if (stream == NULL) { // 此时如果还没有 说明创建失败
+            printf("ng_tcp_stream_create failed\n");
+            return -2;
+        }
+    }
+    // tcp 状态迁移图  TCP 状态转换图 TCP 11个状态
+    // 状态存在 tcp stream 里面
+    switch (stream->status) {
+        case NG_TCP_STATUS_CLOSED: // client  该状态不用处理了
+            break;
+        case NG_TCP_STATUS_LISTEN: // server
+            break;
+        case NG_TCP_STATUS_SYN_RCVD:
+            break;
+        case NG_TCP_STATUS_SYN_SENT:
+            break;
+        case NG_TCP_STATUS_ESTABLISHED:
+            break;
+        case NG_TCP_STATUS_FIN_WAIT_1:
+            break;
+        case NG_TCP_STATUS_FIN_WAIT_2:
+            break;
+        case NG_TCP_STATUS_CLOSING:
+            break;
+        case NG_TCP_STATUS_TIME_WAIT:
+            break;
+        case NG_TCP_STATUS_CLOSE_WAIT:
+            break;
+        case NG_TCP_STATUS_LAST_ACK:
+            break;
+    }
     return 0;
 }
 
