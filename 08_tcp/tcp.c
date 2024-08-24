@@ -1096,7 +1096,76 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 #endif
 
 
-#if ENABLE_TCP_APP
+#if ENABLE_TCP_APP // ngtcp
+
+#define TCP_OPTION_LENGTH    10
+
+typedef enum _NG_TCP_STATUS {
+
+    NG_TCP_STATUS_CLOSED = 0,
+    NG_TCP_STATUS_LISTEN,
+    NG_TCP_STATUS_SYN_RCVD,
+    NG_TCP_STATUS_SYN_SENT,
+    NG_TCP_STATUS_ESTABLISHED,
+
+    NG_TCP_STATUS_FIN_WAIT_1,
+    NG_TCP_STATUS_FIN_WAIT_2,
+    NG_TCP_STATUS_CLOSING,
+    NG_TCP_STATUS_TIME_WAIT,
+
+    NG_TCP_STATUS_CLOSE_WAIT,
+    NG_TCP_STATUS_LAST_ACK
+
+} NG_TCP_STATUS;
+
+
+// tcp 控制块 由五元组决定的
+struct ng_tcp_stream { // tcp control block
+    int fd;
+
+    uint32_t sip;
+    uint32_t dip;
+
+    uint16_t sport;
+    uint16_t dport;
+
+    uint16_t proto;
+
+    uint8_t localmac[RTE_ETHER_ADDR_LEN];
+
+    uint32_t snd_nxt; // seq number
+    uint32_t rcv_nxt; // ack number
+
+    NG_TCP_STATUS status;
+
+    struct rte_ring *sndbuf;
+    struct rte_ring *rcvbuf;
+
+    struct ng_tcp_stream *prev;
+    struct ng_tcp_stream *next;
+
+};
+
+// tcp数据包 结构体
+struct ng_tcp_fragment { // tcp fragment 碎片 分片
+    // tcp header 部分
+    uint16_t sport;
+    uint16_t dport;
+    uint32_t seqnum;
+    uint32_t acknum;
+    uint8_t hdrlen_off;
+    uint8_t tcp_flags;
+    uint16_t windows; // 告诉对方 我自己窗口接收能力有多大
+    uint16_t cksum;
+    uint16_t tcp_urp;
+    // 扩展选项 option 部分
+    // 是否使用 柔性数组 ？？？ 暂时不使用
+    int optlen; // option 选项有多少个
+    uint32_t option[TCP_OPTION_LENGTH];
+    // tcp payload len 有效负载数据
+    unsigned char *data;
+    int length;
+};
 
 static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(tcpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
