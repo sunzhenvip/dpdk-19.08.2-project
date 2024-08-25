@@ -1297,7 +1297,7 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
 
     // checksum校验值处理
     uint16_t tcp_cksum = tcphdr->cksum;
-    tcphdr->cksum = 0; // 初始化数据
+    tcphdr->cksum = 0; // 需要把原始数据初始化之后才能校验
 
     uint16_t cksum = rte_ipv4_udptcp_cksum(iphdr, tcphdr);
 
