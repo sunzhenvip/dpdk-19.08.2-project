@@ -1288,6 +1288,21 @@ static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr
 }
 
 static int ng_tcp_handle_syn_rcvd(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr) {
+
+    if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
+
+        if (stream->status == NG_TCP_STATUS_SYN_RCVD) {
+
+            uint32_t acknum = ntohl(tcphdr->recv_ack);
+            if (acknum == stream->snd_nxt + 1) {
+                //
+            }
+
+            stream->status = NG_TCP_STATUS_ESTABLISHED;
+
+        }
+
+    }
     return 0;
 }
 
@@ -1351,10 +1366,75 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     return 0;
 }
 
+// 构造tcp发送所需要的数据包结构化的内容
+static int ng_encode_tcp_apppkt(uint8_t *msg, uint32_t sip, uint32_t dip,
+                                uint8_t *srcmac, uint8_t *dstmac, struct ng_tcp_fragment *fragment) {
+    // 处理
+    const unsigned total_len = fragment->length + sizeof(struct rte_ether_hdr) +
+                               sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr) +
+                               fragment->optlen * sizeof(uint32_t);
+    // 1 处理 eth hdr
+    struct rte_ether_hdr *eth = (struct rte_ether_hdr *) msg;
+    rte_memcpy(eth->s_addr.addr_bytes, srcmac, RTE_ETHER_ADDR_LEN);
+    rte_memcpy(eth->d_addr.addr_bytes, dstmac, RTE_ETHER_ADDR_LEN);
+    eth->ether_type = htons(RTE_ETHER_TYPE_IPV4);
+
+    // 2 处理 ipv4
+    struct rte_ipv4_hdr *ip = (struct rte_ipv4_hdr *) (msg + sizeof(struct rte_ether_hdr));
+    ip->version_ihl = 0x45;
+    ip->type_of_service = 0;
+    ip->total_length = htons(total_len - sizeof(struct rte_ether_hdr));
+    ip->packet_id = 0;
+    ip->fragment_offset = 0;
+    ip->time_to_live = 64; // ttl = 64
+    ip->next_proto_id = IPPROTO_TCP;
+    ip->src_addr = sip;
+    ip->dst_addr = dip;
+
+
+    ip->hdr_checksum = 0;
+    ip->hdr_checksum = rte_ipv4_cksum(ip);
+
+    // 3 处理 tcp
+    struct rte_tcp_hdr *tcp = (struct rte_tcp_hdr *) (msg + sizeof(struct rte_ether_hdr) + sizeof(struct rte_ipv4_hdr));
+    tcp->src_port = fragment->sport;
+    tcp->dst_port = fragment->dport;
+    tcp->sent_seq = htonl(fragment->seqnum);
+    tcp->recv_ack = htonl(fragment->acknum);
+
+    tcp->data_off = fragment->hdrlen_off;
+    tcp->rx_win = fragment->windows;
+    tcp->tcp_urp = fragment->tcp_urp;
+    tcp->tcp_flags = fragment->tcp_flags;
+
+    if (fragment->data != NULL) {
+        uint8_t * payload = (uint8_t *) (tcp + 1) + fragment->optlen * sizeof(uint32_t);
+        rte_memcpy(payload, fragment->data, fragment->length);
+    }
+
+    tcp->cksum = 0;
+    tcp->cksum = rte_ipv4_udptcp_cksum(ip, tcp);
+
+    return 0;
+}
+
+
 static struct rte_mbuf *ng_tcp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, uint32_t dip,
                                    uint8_t *srcmac, uint8_t *dstmac, struct ng_tcp_fragment *fragment) {
+    // 计算数据包总长度
+    const unsigned total_len = fragment->length + sizeof(struct rte_ether_hdr) +
+                               sizeof(struct rte_ipv4_hdr) + sizeof(struct rte_tcp_hdr) +
+                               fragment->optlen * sizeof(uint32_t);
+    struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
+    if (!mbuf) {
+        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc failed\n");
+    }
+    mbuf->pkt_len = total_len;
+    mbuf->data_len = total_len;
 
+    uint8_t * pktdata = rte_pktmbuf_mtod(mbuf, uint8_t *);
 
+    ng_encode_tcp_apppkt(pktdata, sip, dip, srcmac, dstmac, fragment);
     return NULL;;
 }
 
