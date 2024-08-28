@@ -1446,7 +1446,7 @@ static struct rte_mbuf *ng_tcp_pkt(struct rte_mempool *mbuf_pool, uint32_t sip, 
     uint8_t * pktdata = rte_pktmbuf_mtod(mbuf, uint8_t *);
 
     ng_encode_tcp_apppkt(pktdata, sip, dip, srcmac, dstmac, fragment);
-    return NULL;;
+    return mbuf;
 }
 
 
