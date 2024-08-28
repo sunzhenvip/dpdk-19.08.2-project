@@ -42,7 +42,7 @@
 
 #define MAKE_IPV4_ADDR(a, b, c, d) (a + (b<<8) + (c<<16) + (d<<24))
 
-static uint32_t gLocalIp = MAKE_IPV4_ADDR(192, 168, 0, 115);
+static uint32_t gLocalIp = MAKE_IPV4_ADDR(192, 168, 79, 201);
 
 static uint8_t gSrcMac[RTE_ETHER_ADDR_LEN];
 
@@ -258,7 +258,7 @@ static struct rte_mbuf *ng_send_arp(struct rte_mempool *mbuf_pool, uint16_t opco
 
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
-        rte_exit(EXIT_FAILURE, "rte_pktmbuf_alloc\n");
+        rte_exit(EXIT_FAILURE, "ng_send_arp rte_pktmbuf_alloc\n");
     }
 
     mbuf->pkt_len = total_length;
@@ -386,7 +386,7 @@ arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim,
 	rte_pktmbuf_free(arpbuf);
 
 #endif
-
+#if 0
     int i = 0;
     for (i = 1;i <= 254;i ++) {
 
@@ -412,7 +412,7 @@ arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim,
         rte_ring_mp_enqueue_burst(ring->out, (void**)&arpbuf, 1, NULL);
 
     }
-
+#endif
 }
 
 
@@ -818,6 +818,8 @@ static int udp_out(struct rte_mempool *mbuf_pool) {
         printf("udp_out ---> src: %s:%d \n", inet_ntoa(addr), ntohs(ol->dport));
 
         uint8_t *dstmac = ng_get_dst_macaddr(ol->dip);
+        // mac 地址 98:59:7a:dd:dc:81 对应 192.168.79.5 联想笔记本电脑
+        // uint8_t dstmac[RTE_ETHER_ADDR_LEN] =  {0x98, 0x59, 0x7a, 0xdd, 0xdc, 0x81};
         if (dstmac == NULL) {
 
             struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac,
@@ -1033,7 +1035,7 @@ static int udp_server_entry(__attribute__((unused))  void *arg) {
 
     localaddr.sin_port = htons(8889);
     localaddr.sin_family = AF_INET;
-    localaddr.sin_addr.s_addr = inet_addr("192.168.0.115"); // 0.0.0.0
+    localaddr.sin_addr.s_addr = inet_addr("192.168.79.201"); // 0.0.0.0
 
 
     nbind(connfd, (struct sockaddr*)&localaddr, sizeof(localaddr));
