@@ -1316,13 +1316,22 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
             break;
 
         case NG_TCP_STATUS_ESTABLISHED: // server | client
+            // 00001111 和 1111 是相等的 最前面的0000 可以省略
+            // 如果是 11110000 后面的0000 不能省略
+            // 位与运算符（&）：当两个位都为1时，结果为1，否则为0。
+            // 位右移运算符（>>）：将一个位向右移动指定的位数，左边补0或者补最高位的值（根据语言规定）
+            // tcphdr->data_off = 0xA0
+            // (0xA0 & 0xF0) >> 4
+            // 1010 0000 .... = Header Length: 40 bytes (10)
+            // 1111 0000 == 0xF0
+            // 1010 0000 像右移动4位 等于 0000 1010
             ; // 表示是空语句 也能绕过限制 或者使用{} 包裹在一起 更推荐使用{}把需要执行的代码包裹
             // switch语句的每个case标签应该直接跟随一个语句，而不是一个变量声明
             uint8_t hdrlen = tcphdr->data_off & 0xF0;
-            hdrlen >= 4;
-            uint8_t *payload = (uint8_t *)(tcphdr + 1) + hdrlen * 4;
 
-            printf("payload: %s\n", payload);
+            uint8_t *payload = (uint8_t *)(tcphdr + 1) + (hdrlen >> 4) * 4;
+
+            printf("NG_TCP_STATUS_ESTABLISHED payload: %s\n", payload);
 
             break;
 
