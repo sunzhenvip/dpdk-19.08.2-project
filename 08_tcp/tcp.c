@@ -1349,12 +1349,16 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
         case NG_TCP_STATUS_SYN_SENT: // client
             break;
         case NG_TCP_STATUS_ESTABLISHED: // client || server
-            ;
-            uint8_t hdrlen = tcphdr->data_off & 0xF0;
-            hdrlen >= 4;
-            uint8_t *payload = (uint8_t *)(tcphdr + 1) + hdrlen * 4;
+            // 计算TCP头部长度
+            {
+                uint8_t hdrlen = (tcphdr->data_off >> 4) & 0x0F;
+                hdrlen *= 4;
 
-            printf("payload: %s\n", payload);
+                // 获取TCP payload的首地址
+                uint8_t *payload = (uint8_t *)(tcphdr) + hdrlen;
+                // 打印TCP payload数据（假定为null结尾的字符串）
+                printf("payload: %s\n", payload);
+            }
 
             break;
         case NG_TCP_STATUS_FIN_WAIT_1: //  目前写的代码 我作为server 是被动关闭放   暂时认为是 只有 ~(约等于)client 发 close
