@@ -277,6 +277,7 @@ ng_send_arp(struct rte_mempool *mbuf_pool, uint16_t opcode, uint8_t *dst_mac, ui
     // mempool --> mbuf 从内存池中获取一个mbuf ,使用内存池最小的单位是 mbuf
     struct rte_mbuf *mbuf = rte_pktmbuf_alloc(mbuf_pool);
     if (!mbuf) {
+        // todo 执行tcp的时候 请求arp的时候回导致这个地方出错 还在排查原因
         rte_exit(EXIT_FAILURE, "ng_send_arp rte_pktmbuf_alloc 分配内存失败\n");
     }
     mbuf->pkt_len = total_length;
@@ -381,19 +382,24 @@ static void print_ethaddr(const char *name, const struct rte_ether_addr *eth_add
 
 #if ENABLE_TIMER
 
+// 暂时没有使用到该函数 增加  __attribute__((unused)) 消除编译警告
+static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *, __attribute__((unused)) void *) __attribute__((unused));
+
 /**
- * 定时器回调函数 多久执行一次
+ * 定时器回调函数 多久执行一次 这个功能好使的 我先暂时注释了 每次 启动 定时打印太多了 想使用在打开 if 开关
  * (__attribute__((unused)) 意思是编译时不在警告改变量没有使用
  * @param tim
  * @param arg
  */
-static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
+static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, __attribute__((unused)) void *arg) {
     printf("执行了定时任务 arp_request_timer_cb 方法  ...............\n");
     // 传递的是内存池
     // 定时发送arp请求
+#if 0
     struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
     struct inout_ring *ring = ringInstance();
 #if 0
+    // 这段代码暂时没用
     struct rte_mbuf *arpbuf = ng_send_arp(mbuf_pool, RTE_ARP_OP_REQUEST, ahdr->arp_data.arp_sha.addr_bytes,
         ahdr->arp_data.arp_tip, ahdr->arp_data.arp_sip);
 
@@ -423,6 +429,7 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
         // arpbuf 变量被回收，rte_mbuf 结构体本身依然存在于内存中，消费者可以从环形缓冲区中正常取出并使用这个结构体。
         rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
     }
+#endif
 }
 
 #endif
@@ -454,12 +461,14 @@ static int pkt_process(void *arg) {
                 struct in_addr addr;
                 // 调试代码
                 addr.s_addr = arp_hdr->arp_data.arp_sip; // 发送方的IP
-                printf("arp ---> 发送方IP: %s \n", inet_ntoa(addr));
+                // printf("arp ---> 发送方IP: %s \n", inet_ntoa(addr));
                 // 发送的目标IP
-                addr.s_addr = arp_hdr->arp_data.arp_tip; // 某个机器发送的目标IP
-                printf("arp ---> src: %s ", inet_ntoa(addr));
-                addr.s_addr = gLocalIp;
-                printf(" local: %s \n", inet_ntoa(addr));
+                if (arp_hdr->arp_data.arp_tip == gLocalIp) {
+                    addr.s_addr = arp_hdr->arp_data.arp_tip; // 某个机器发送的目标IP
+                    printf("arp ---> src: %s ", inet_ntoa(addr));
+                    addr.s_addr = gLocalIp;
+                    printf(" local: %s \n", inet_ntoa(addr));
+                }
                 // 如果目标IP和本机IP相同则处理(说明在广播获取本机IP以及mac地址) 返回自己的mac地址
                 // 目标IP发送本机的时候才处理 如果没有if的判断就是一个arp攻击
                 if (arp_hdr->arp_data.arp_tip == gLocalIp) {
@@ -479,7 +488,7 @@ static int pkt_process(void *arg) {
                         printf("arp --> 回应数据包 RTE_ARP_OP_REPLY \n");
                         struct arp_table *table = arp_table_instance();
                         if (hwaddr == NULL) {
-                            printf("arp --> ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip) == NULL \n");
+                            // printf("arp --> ng_get_dst_macaddr(arp_hdr->arp_data.arp_sip) == NULL \n");
                             struct arp_entry *entry = rte_malloc("arp_entry", sizeof(struct arp_entry), 0);
                             if (entry) {
                                 // 初始化值设置0
@@ -687,7 +696,7 @@ static int udp_process(struct rte_mbuf *udpmbuf) {
     // 打印测试 打印ip地址
     struct in_addr addr;
     addr.s_addr = iphdr->src_addr;
-    printf("udp_process ---> src: %s:%d \n", inet_ntoa(addr), ntohs(udphdr->src_port));
+    // printf("udp_process ---> src: %s:%d \n", inet_ntoa(addr), ntohs(udphdr->src_port));
     // 查找信息
     struct localhost *host = get_hostinfo_fromip_port(iphdr->dst_addr, udphdr->dst_port, iphdr->next_proto_id);
     if (host == NULL) { // 应该是正常的 有一些 可能是广播的数据  对应的host可能不存在 (此情况不做处理退出即可)
@@ -1319,7 +1328,7 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
 #if 1
     if (cksum != tcp_cksum) { // cksum 程序进行校验值 tcp_cksum 发送过来的数据包值
         printf("cksum: %x, tcp cksum: %x\\n", cksum, tcp_cksum);
-        return -1;
+        // return -1;
     }
 #endif
     //  查找 流表 是否有 对应的 流
@@ -1465,7 +1474,11 @@ static int ng_tcp_out(struct rte_mempool *mbuf_pool) {
             continue;
         }
         uint8_t * dstmac = ng_get_dst_macaddr(stream->sip); // 客户端IP
+        // 98:59:7a:dd:dc:81
+        // uint8_t dstmac[RTE_ETHER_ADDR_LEN] =  {0x98, 0x59, 0x7a, 0xdd, 0xdc, 0x81};
         if (dstmac == NULL) {
+            // todo 走这个 arp 请求 会错误错误 还要排查 貌似 因为请求太快 太多 还来不及走 else 分支
+            // 在这个分支 增加一个sleep停训一会貌似 可以了 需要进一步修正
             struct rte_mbuf *arpbuf = ng_send_arp(
                     mbuf_pool, RTE_ARP_OP_REQUEST, gDefaultArpMac, stream->dip, stream->sip);
 
@@ -1473,7 +1486,11 @@ static int ng_tcp_out(struct rte_mempool *mbuf_pool) {
             struct inout_ring *ring = ringInstance();
             rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
             rte_ring_mp_enqueue(stream->sndbuf, fragment);
+            // 调试
+            // printf("dstmac == NULL sleep \n");
+            // sleep(1);
         } else {
+            // 如果程序启动直接走这个 可以一次连接成功tcp握手
             struct rte_mbuf *tcpbuf = ng_tcp_pkt(mbuf_pool, stream->dip, stream->sip,
                                                  stream->localmac, dstmac, fragment);
             struct inout_ring *ring = ringInstance();
@@ -1608,6 +1625,15 @@ int main(int argc, char *argv[]) {
         // 适用于单消费者模式 即环形缓冲区中只有一个线程会进行出队操作。使用单消费者模式可以避免使用锁，从而提高性能
         unsigned nb_tx = rte_ring_sc_dequeue_burst(ring->out, (void **) tx, BURST_SIZE, NULL);
         if (nb_tx > 0) {
+            // 调试
+            // printf("nb_tx len = %d\n",nb_tx);
+            unsigned j = 0;
+            for ( j = 0; j < nb_tx; j++) {
+                if (tx[j] == NULL) {
+                    // 错误处理或日志记录
+                    printf("main() rte_ring_sc_dequeue_burst error: tx[%u] is NULL\n", j);
+                }
+            }
             // 发送数据到网卡
             rte_eth_tx_burst(gDpdkPortId, 0, tx, nb_tx);
 
