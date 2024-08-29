@@ -1,0 +1,13 @@
+
+vppplugins_LTLIBRARIES += bridgeloadbalancer_plugin.la
+
+bridgeloadbalancer_plugin_la_SOURCES = \
+	bridgeloadbalancer/bridge.c	\
+	bridgeloadbalancer/bridge_node.c	\	
+	bridgeloadbalancer/loadbalancer.c	\
+	bridgeloadbalancer/loadbalancer_node.c
+
+nobase_apiinclude_HEADERS	+=	\
+	bridgeloadbalancer/bridge.h	\
+	bridgeloadbalancer/loadbalancer.h
+

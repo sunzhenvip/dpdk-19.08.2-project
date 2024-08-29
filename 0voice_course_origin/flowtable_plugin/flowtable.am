@@ -1,0 +1,13 @@
+
+
+vppplugins_LTLIBRARIES += flowtable_plugin.la
+
+flowtable_plugin_la_SOURCES = \
+	flowtable/flowtable.c \
+	flowtable/flowtable_node.c \
+	flowtable/loadbalancer.c \
+	flowtable/loadbalancer_node.c 
+
+nobase_apiinclude_HEADERS += \
+	flowtable/flowtable.h \
+	flowtable/loadbalancer.h

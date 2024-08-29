@@ -1,0 +1,12 @@
+
+
+uprobe:/home/king/share/NtyCo/bin/nty_http_server:nty_coroutine_yield
+{
+	printf("ntyco yield enter: %ld\n", nsecs);
+}
+
+uretprobe:/home/king/share/NtyCo/bin/nty_http_server:nty_coroutine_yield
+{
+	printf("ntyco yield exit: %ld\n", nsecs);
+}
+
