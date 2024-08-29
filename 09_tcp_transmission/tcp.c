@@ -1208,6 +1208,7 @@ static struct ng_tcp_stream *ng_tcp_stream_search(uint32_t sip, uint32_t dip, ui
 
 
 static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, uint16_t sport, uint16_t dport) {
+    // 第一次 需要创建 当前会话所需要的信息
     // tcp => status
     struct ng_tcp_stream *stream = rte_malloc("ng_tcp_stream", sizeof(struct ng_tcp_stream), 0);
     if (stream == NULL) {
