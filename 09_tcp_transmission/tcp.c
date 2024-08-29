@@ -387,10 +387,11 @@ static void print_ethaddr(const char *name, const struct rte_ether_addr *eth_add
  * @param tim
  * @param arg
  */
-static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, void *arg) {
+static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, __attribute__((unused)) void *arg) {
     printf("执行了定时任务 arp_request_timer_cb 方法  ...............\n");
     // 传递的是内存池
     // 定时发送arp请求
+#if 0
     struct rte_mempool *mbuf_pool = (struct rte_mempool *) arg;
     struct inout_ring *ring = ringInstance();
 #if 0
@@ -423,6 +424,7 @@ static void arp_request_timer_cb(__attribute__((unused)) struct rte_timer *tim, 
         // arpbuf 变量被回收，rte_mbuf 结构体本身依然存在于内存中，消费者可以从环形缓冲区中正常取出并使用这个结构体。
         rte_ring_mp_enqueue_burst(ring->out, (void **) &arpbuf, 1, NULL);
     }
+#endif
 }
 
 #endif
