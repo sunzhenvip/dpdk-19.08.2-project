@@ -26,7 +26,7 @@
 // upd server 服务开关
 #define ENABLE_UDP_APP     1
 // tcp Server 服务开关
-#define ENABLE_TCP_APP       1
+#define ENABLE_TCP_APP     1
 
 
 #define NUM_MBUFS (4096-1)
