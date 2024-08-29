@@ -450,7 +450,7 @@ static int pkt_process(void *arg) {
             if (ehdr->ether_type == rte_cpu_to_be_16(RTE_ETHER_TYPE_ARP)) {
                 // 偏移一个以太网的数据包的大小
                 struct rte_arp_hdr *arp_hdr =
-                rte_pktmbuf_mtod_offset(mbufs[i], struct rte_arp_hdr*, sizeof(struct rte_ether_hdr));
+                        rte_pktmbuf_mtod_offset(mbufs[i], struct rte_arp_hdr*, sizeof(struct rte_ether_hdr));
                 struct in_addr addr;
                 // 调试代码
                 addr.s_addr = arp_hdr->arp_data.arp_sip; // 发送方的IP
@@ -524,7 +524,7 @@ static int pkt_process(void *arg) {
             }
             // 获取ip头 转化为 结构体数据
             struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(mbufs[i], struct rte_ipv4_hdr *,
-            sizeof(struct rte_ether_hdr));
+                                                                 sizeof(struct rte_ether_hdr));
             // 判断是否是udp协议
             if (iphdr->next_proto_id == IPPROTO_UDP) {
                 // 处理udp协议数据
@@ -1130,7 +1130,7 @@ typedef enum _NG_TCP_STATUS {
 
 
 // tcp 控制块 由五元组决定的
-struct ng_tcp_stream { // tcp control block
+struct ng_tcp_stream { // 表示当前连接的会话状态 tcp control block
     int fd;
 
     uint32_t sip;
@@ -1233,6 +1233,7 @@ static struct ng_tcp_stream *ng_tcp_stream_create(uint32_t sip, uint32_t dip, ui
     // 他是一个随机值
     uint32_t next_seed = time(NULL);
     // 生成一个seq 随机值
+    // seq number
     stream->snd_nxt = rand_r(&next_seed) % TCP_MAX_SEQ;
     // 获取本机mac地址
     rte_memcpy(stream->localmac, gSrcMac, RTE_ETHER_ADDR_LEN);
@@ -1248,6 +1249,8 @@ static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr
     if (tcphdr->tcp_flags & RTE_TCP_SYN_FLAG) { // 如果是 syn 包 才处理
         // 有可能重复发  如何去避免 在状态机里面处理一个
         if (stream->status == NG_TCP_STATUS_LISTEN) { // 应该是需要避免重复的包 这一行暂时还没明白？？？
+            // stream 表示当前连接的会话状态
+            // fragment 表示要传输的tcp数据包
             struct ng_tcp_fragment *fragment = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
             if (fragment == NULL) {
                 return -1;
@@ -1270,6 +1273,9 @@ static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr
             fragment->seqnum = stream->snd_nxt;
             // 对 网络 转 本地 字节序
             fragment->acknum = ntohl(tcphdr->sent_seq) + 1;
+            // todo 新增的 待确认 作用
+            // ack number
+            stream->rcv_nxt = fragment->acknum;
 
             // 把 syn ack 置 1
             fragment->tcp_flags = (RTE_TCP_SYN_FLAG | RTE_TCP_ACK_FLAG);
@@ -1306,6 +1312,117 @@ static int ng_tcp_handle_syn_rcvd(struct ng_tcp_stream *stream, struct rte_tcp_h
     }
     return 0;
 }
+
+static int ng_tcp_handle_established(struct ng_tcp_stream *stream, struct rte_tcp_hdr *tcphdr, int tcplen) {
+    if (tcphdr->tcp_flags & RTE_TCP_SYN_FLAG) {
+        // 待处理
+    }
+    if (tcphdr->tcp_flags & RTE_TCP_PSH_FLAG) {
+        // recv buffer
+        struct ng_tcp_fragment *rfragment = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
+        if (rfragment == NULL) {
+            return -1;
+        }
+        memset(rfragment, 0, sizeof(struct ng_tcp_fragment));
+
+        rfragment->dport = ntohs(tcphdr->dst_port);
+        rfragment->sport = ntohs(tcphdr->src_port);
+
+
+        uint8_t hdrlen = tcphdr->data_off >> 4;
+        int payloadlen = tcplen - (hdrlen * 4);
+        if (payloadlen > 0) {
+            // 获取到 payload 首部长度地址
+            uint8_t * payload = (uint8_t *) tcphdr + hdrlen;
+
+            rfragment->data = rte_malloc("unsigned char *", payloadlen + 1, 0);
+            if (rfragment->data == NULL) {
+                rte_free(rfragment);
+                return -1;
+            }
+            memset(rfragment->data, 0, payloadlen + 1);
+
+            rte_memcpy(rfragment->data, payload, payloadlen);
+            rfragment->length = payloadlen;
+
+            printf("tcp payload : %s\n", rfragment->data);
+        }
+        // 数据给 recv buffer 应用层处理
+        rte_ring_mp_enqueue(stream->rcvbuf, rfragment);
+
+        // 创建一个 ack pkt 数据包
+        struct ng_tcp_fragment *ackfrag = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
+        if (ackfrag == NULL) {
+            return -1;
+        }
+        memset(ackfrag, 0, sizeof(struct ng_tcp_fragment));
+
+        ackfrag->dport = tcphdr->src_port;
+        ackfrag->sport = tcphdr->dst_port;
+
+        // remote
+        printf("ng_tcp_handle_established: %d, %d\n", stream->rcv_nxt, ntohs(tcphdr->sent_seq));
+
+        // 处理 ack 和 seq
+        stream->rcv_nxt = stream->rcv_nxt + payloadlen;
+        // local
+        stream->snd_nxt = ntohl(tcphdr->recv_ack);
+        //ackfrag->
+
+        ackfrag->acknum = stream->rcv_nxt;
+        ackfrag->seqnum = stream->snd_nxt;
+
+        ackfrag->tcp_flags = RTE_TCP_ACK_FLAG;
+        ackfrag->windows = TCP_INITIAL_WINDOW;
+        ackfrag->hdrlen_off = 0x50;
+        ackfrag->data = NULL;
+        ackfrag->length = 0;
+
+        rte_ring_mp_enqueue(stream->sndbuf, ackfrag);
+
+        // 回复一个 echo pkt 数据包
+        struct ng_tcp_fragment *echofrag = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
+        if (echofrag == NULL) {
+            return -1;
+        }
+        memset(echofrag, 0, sizeof(struct ng_tcp_fragment));
+
+        echofrag->dport = tcphdr->src_port;
+        echofrag->sport = tcphdr->dst_port;
+
+        echofrag->acknum = stream->rcv_nxt;
+        echofrag->seqnum = stream->snd_nxt;
+
+        echofrag->tcp_flags = RTE_TCP_ACK_FLAG | RTE_TCP_PSH_FLAG;
+        echofrag->windows = TCP_INITIAL_WINDOW;
+        echofrag->hdrlen_off = 0x50;
+
+        uint8_t * payload = (uint8_t *) tcphdr + hdrlen * 4;
+
+        echofrag->data = rte_malloc("unsigned char *", payloadlen, 0);
+        if (echofrag->data == NULL) {
+            rte_free(echofrag);
+            return -1;
+        }
+        memset(echofrag->data, 0, payloadlen);
+
+        rte_memcpy(echofrag->data, payload, payloadlen);
+        echofrag->length = payloadlen;
+
+        rte_ring_mp_enqueue(stream->sndbuf, echofrag);
+
+    }
+    if (tcphdr->tcp_flags & RTE_TCP_ACK_FLAG) {
+
+    }
+    if (tcphdr->tcp_flags & RTE_TCP_FIN_FLAG) {
+
+        stream->status = NG_TCP_STATUS_CLOSE_WAIT;
+
+    }
+    return 0;
+}
+
 
 static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
     struct rte_ipv4_hdr *iphdr = rte_pktmbuf_mtod_offset(tcpmbuf, struct rte_ipv4_hdr *, sizeof(struct rte_ether_hdr));
@@ -1349,19 +1466,22 @@ static int ng_tcp_process(struct rte_mbuf *tcpmbuf) {
             break;
         case NG_TCP_STATUS_SYN_SENT: // client
             break;
-        case NG_TCP_STATUS_ESTABLISHED: // client || server
+        case NG_TCP_STATUS_ESTABLISHED: { // client || server
+            // 处理建立连接(三次握手之后)开始通信的数据
             // 计算TCP头部长度
-        {
-            uint8_t hdrlen = (tcphdr->data_off >> 4) & 0x0F;
-            hdrlen *= 4;
-
-            // 获取TCP payload的首地址
-            uint8_t *payload = (uint8_t *)(tcphdr) + hdrlen;
-            // 打印TCP payload数据（假定为null结尾的字符串）
-            printf("payload: %s\n", payload);
-        }
-
+            // {
+            //     uint8_t hdrlen = (tcphdr->data_off >> 4) & 0x0F;
+            //     hdrlen *= 4;
+            //
+            //     // 获取TCP payload的首地址
+            //     uint8_t *payload = (uint8_t *)(tcphdr) + hdrlen;
+            //     // 打印TCP payload数据（假定为null结尾的字符串）
+            //     printf("payload: %s\n", payload);
+            // }
+            int tcplen = ntohs(iphdr->total_length) - sizeof(struct rte_ipv4_hdr);
+            ng_tcp_handle_established(stream, tcphdr, tcplen);
             break;
+        }
         case NG_TCP_STATUS_FIN_WAIT_1: //  目前写的代码 我作为server 是被动关闭放   暂时认为是 只有 ~(约等于)client 发 close
             break;
         case NG_TCP_STATUS_FIN_WAIT_2: //  目前写的代码 我作为server 是被动关闭放   暂时认为是 只有 ~(约等于)client 发 close
