@@ -1247,7 +1247,7 @@ static int ng_tcp_handle_listen(struct ng_tcp_stream *stream, struct rte_tcp_hdr
     // 该数据包 是 服务端 发送给 客户端的包
     if (tcphdr->tcp_flags & RTE_TCP_SYN_FLAG) { // 如果是 syn 包 才处理
         // 有可能重复发  如何去避免 在状态机里面处理一个
-        if (stream->status == NG_TCP_STATUS_LISTEN) { // 这一行暂时还没明白？？？
+        if (stream->status == NG_TCP_STATUS_LISTEN) { // 应该是需要避免重复的包 这一行暂时还没明白？？？
             struct ng_tcp_fragment *fragment = rte_malloc("ng_tcp_fragment", sizeof(struct ng_tcp_fragment), 0);
             if (fragment == NULL) {
                 return -1;
