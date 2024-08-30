@@ -22,6 +22,7 @@ netarch.c文件中 MAKE_IPV4_ADDR 方法修改成自己的实际IP地址
     2、请使用 NetAssist.exe 软件进行测试
     4、为了arp 更新 先执行 udp 在执行tcp (这一步 不确定是否需要)
     5、tcp 实现三次握手
+    6、实现 数据传输 接收和发送
 
 
 1.不用offload，用rte mbufs来实现，udp 接口 如何实现？
